@@ -50,22 +50,26 @@ async def preview(
         "hojas":     resultado["hojas"],
         "periodo":   resultado["periodo"],
         "resumen":   resumen,
-        "filas":     resultado["filas"],
+        "filas":     [f for f in resultado["filas"] if float(f.get("cantidades") or 0) != 0],
         "errores":   resultado["errores"],
     }
-
-
 @router.post("/confirmar")
 async def confirmar(
     archivo: UploadFile = File(...),
     periodo_anio: int   = Form(...),
     periodo_mes: int    = Form(...),
+    hojas: str          = Form(default="[]"),
     current: Usuario    = Depends(get_current_user),
     db: Session         = Depends(get_db),
 ):
     """
     Parsea y carga definitivamente las filas sin error a la BD.
+    Solo carga las hojas seleccionadas por el usuario y excluye cantidad 0.
     """
+    import json
+
+    hojas_seleccionadas = json.loads(hojas)
+
     contenido = await archivo.read()
     if len(contenido) > MAX_FILE_MB * 1024 * 1024:
         raise HTTPException(400, f"El archivo supera los {MAX_FILE_MB} MB")
@@ -76,17 +80,26 @@ async def confirmar(
     for k in contratos_en_archivo:
         check_contrato_access(current, k)
 
-    filas_ok = [f for f in resultado["filas"] if not f["tiene_error"]]
+    filas_ok = [
+        f for f in resultado["filas"]
+        if not f["tiene_error"]
+        and float(f.get("cantidades") or 0) != 0
+        and (not hojas_seleccionadas or f["hoja_origen"] in hojas_seleccionadas)
+    ]
+
     if not filas_ok:
         raise HTTPException(422, "No hay filas válidas para cargar")
 
     carga = cargar_certificaciones(db, filas_ok, current.id, current.nombre)
 
+    # Recalcular contratos solo de las filas que se cargaron
+    contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
+
     log = CargaLog(
         usuario_id     = current.id,
         usuario_nombre = current.nombre,
         archivo_nombre = archivo.filename,
-        contrato       = ", ".join(contratos_en_archivo),
+        contrato       = ", ".join(contratos_cargados),
         periodo        = f"{periodo_anio}-{periodo_mes:02d}",
         filas_cargadas = carga["insertadas"],
         filas_error    = carga["omitidas"],
@@ -102,8 +115,6 @@ async def confirmar(
         "omitidas":   carga["omitidas"],
         "errores":    carga["errores"][:10],
     }
-
-
 @router.get("/historial")
 def historial(
     current: Usuario = Depends(get_current_user),
@@ -167,3 +178,26 @@ def _sumar_total(filas: list[dict]) -> float:
         except (ValueError, TypeError):
             pass
     return round(total, 2)
+
+@router.get("/detalle")
+def detalle(
+    periodo: str,
+    contrato: str,
+    current: Usuario = Depends(get_current_user),
+    db: Session      = Depends(get_db),
+):
+    check_contrato_access(current, contrato)
+    rows = db.execute(text("""
+        SELECT
+            di.item_codigo, fc.tarea, fc.tipo, pv.provincia AS provincia,
+            fc.unidad_medida, fc.cantidades, fc.precio_unitario,
+            fc.total_mes, fc.observaciones
+        FROM fact_certificaciones fc
+        JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
+        JOIN dim_item      di ON fc.id_item       = di.id_item
+        JOIN ma_provincias pv ON fc.id_provincia  = pv.id
+        WHERE dc.codigo_k = :k
+          AND DATE_FORMAT(fc.fecha, '%Y-%m') = :periodo
+        ORDER BY di.item_codigo
+    """), {"k": contrato, "periodo": periodo}).fetchall()
+    return [dict(r._mapping) for r in rows]
