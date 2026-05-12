@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 
 def _resolver_id_item(db: Session, item_codigo: str, contrato_k: str) -> int | None:
+    # Busca primero en el contrato correspondiente, si no lo encuentra busca en cualquier contrato
     row = db.execute(text("""
         SELECT di.id_item FROM dim_item di
         JOIN dim_contrato dc ON di.id_contrato = dc.id_contrato
@@ -14,6 +15,17 @@ def _resolver_id_item(db: Session, item_codigo: str, contrato_k: str) -> int | N
           AND dc.codigo_k = :k
         LIMIT 1
     """), {"item": item_codigo.replace(".", ","), "k": contrato_k}).fetchone()
+
+    if row:
+        return row[0]
+
+    # Fallback: buscar solo por código sin importar el contrato
+    row = db.execute(text("""
+        SELECT id_item FROM dim_item
+        WHERE REPLACE(item_codigo, '.', ',') = :item
+        LIMIT 1
+    """), {"item": item_codigo.replace(".", ",")}).fetchone()
+
     return row[0] if row else None
 
 
