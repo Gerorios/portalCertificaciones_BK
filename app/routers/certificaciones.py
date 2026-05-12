@@ -10,6 +10,7 @@ from app.services.auth import get_current_user, check_contrato_access
 from app.services.parser import parsear_bytes
 from app.services.carga import cargar_certificaciones
 from app.services.cache import guardar, recuperar, limpiar
+from app.services.parser_pdf import parsear_pdf_bytes
 
 router = APIRouter(prefix="/certificaciones", tags=["certificaciones"])
 
@@ -33,7 +34,10 @@ async def preview(
     if len(contenido) > MAX_FILE_MB * 1024 * 1024:
         raise HTTPException(400, f"El archivo supera los {MAX_FILE_MB} MB")
 
-    resultado = parsear_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
+    if archivo.filename.lower().endswith(".pdf"):
+         resultado = parsear_pdf_bytes(contenido, archivo.filename, periodo_anio, periodo_mes) 
+    else:
+         resultado = parsear_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
 
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
