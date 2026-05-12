@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -7,12 +9,14 @@ from app.models import Usuario, CargaLog
 from app.services.auth import get_current_user, check_contrato_access
 from app.services.parser import parsear_bytes
 from app.services.carga import cargar_certificaciones
+from app.services.cache import guardar, recuperar, limpiar
 
 router = APIRouter(prefix="/certificaciones", tags=["certificaciones"])
 
 MAX_FILE_MB = 20
 
 
+# ── Preview ───────────────────────────────────────────────────
 @router.post("/preview")
 async def preview(
     archivo: UploadFile = File(...),
@@ -21,7 +25,8 @@ async def preview(
     current: Usuario    = Depends(get_current_user),
 ):
     """
-    Parsea el Excel y devuelve las filas con validaciones.
+    Parsea el Excel, guarda el resultado en caché y devuelve
+    las filas con validaciones + un cache_id para confirmar.
     NO escribe en la base de datos.
     """
     contenido = await archivo.read()
@@ -33,74 +38,113 @@ async def preview(
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
-    # Verificar que el jefe solo suba sus contratos
+    # Verificar acceso a los contratos del archivo
     contratos_en_archivo = {f["contrato"] for f in resultado["filas"] if f.get("contrato")}
     for k in contratos_en_archivo:
         check_contrato_access(current, k)
 
+    # Filtrar filas con cantidad > 0 para el preview
+    filas_validas = [
+        f for f in resultado["filas"]
+        if float(f.get("cantidades") or 0) != 0
+    ]
+
     resumen = {
-        "total":     len(resultado["filas"]),
-        "con_error": sum(1 for f in resultado["filas"] if f["tiene_error"]),
-        "advertencias": len([e for e in resultado["errores"] if e["campo"] != "provincia"]),
-        "total_mes": _sumar_total(resultado["filas"]),
+        "total":      len(filas_validas),
+        "con_error":  sum(1 for f in filas_validas if f["tiene_error"]),
+        "total_mes":  _sumar_total(filas_validas),
     }
 
+    # Guardar resultado completo en caché
+    id_cache = guardar({
+        "resultado":     resultado,
+        "archivo":       archivo.filename,
+        "periodo_anio":  periodo_anio,
+        "periodo_mes":   periodo_mes,
+        "usuario_id":    current.id,
+    })
+
     return {
+        "cache_id":  id_cache,
         "archivo":   resultado["archivo"],
         "hojas":     resultado["hojas"],
         "periodo":   resultado["periodo"],
         "resumen":   resumen,
-        "filas":     [f for f in resultado["filas"] if float(f.get("cantidades") or 0) != 0],
+        "filas":     filas_validas,
         "errores":   resultado["errores"],
     }
+
+
+# ── Confirmar ─────────────────────────────────────────────────
 @router.post("/confirmar")
 async def confirmar(
-    archivo: UploadFile = File(...),
-    periodo_anio: int   = Form(...),
-    periodo_mes: int    = Form(...),
+    cache_id: str       = Form(...),
     hojas: str          = Form(default="[]"),
+    filas_editadas: str = Form(default="[]"),
     current: Usuario    = Depends(get_current_user),
     db: Session         = Depends(get_db),
 ):
     """
-    Parsea y carga definitivamente las filas sin error a la BD.
-    Solo carga las hojas seleccionadas por el usuario y excluye cantidad 0.
+    Carga las filas a la BD usando el caché del preview.
+    Usa las filas editadas por el usuario si las hay.
     """
-    import json
-
     hojas_seleccionadas = json.loads(hojas)
+    filas_del_frontend  = json.loads(filas_editadas)
 
-    contenido = await archivo.read()
-    if len(contenido) > MAX_FILE_MB * 1024 * 1024:
-        raise HTTPException(400, f"El archivo supera los {MAX_FILE_MB} MB")
+    # Recuperar del caché
+    cached = recuperar(cache_id)
+    if not cached:
+        raise HTTPException(
+            400,
+            "La sesión expiró (30 minutos). Volvé a subir el archivo."
+        )
 
-    resultado = parsear_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
+    # Verificar que el usuario que confirma es el mismo que hizo el preview
+    if cached["usuario_id"] != current.id:
+        raise HTTPException(403, "No autorizado")
 
-    contratos_en_archivo = {f["contrato"] for f in resultado["filas"] if f.get("contrato")}
-    for k in contratos_en_archivo:
-        check_contrato_access(current, k)
+    if filas_del_frontend:
+        # Usar las filas editadas por el usuario — estas tienen las correcciones
+        filas_ok = [
+            f for f in filas_del_frontend
+            if not f.get("tiene_error")
+            and float(f.get("cantidades") or 0) != 0
+            and f.get("provincia")
+        ]
+        contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
+    else:
+        # Usar las filas del caché filtradas por hojas seleccionadas
+        resultado = cached["resultado"]
+        filas_ok = [
+            f for f in resultado["filas"]
+            if not f["tiene_error"]
+            and float(f.get("cantidades") or 0) != 0
+            and (not hojas_seleccionadas or f["hoja_origen"] in hojas_seleccionadas)
+        ]
+        contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
 
-    filas_ok = [
-        f for f in resultado["filas"]
-        if not f["tiene_error"]
-        and float(f.get("cantidades") or 0) != 0
-        and (not hojas_seleccionadas or f["hoja_origen"] in hojas_seleccionadas)
-    ]
+    # Verificar acceso
+    for k in contratos_cargados:
+        if k:
+            check_contrato_access(current, k)
 
     if not filas_ok:
         raise HTTPException(422, "No hay filas válidas para cargar")
 
+    # Asegurar archivo_origen en todas las filas
+    for f in filas_ok:
+        if not f.get("archivo_origen"):
+            f["archivo_origen"] = cached["archivo"]
+
     carga = cargar_certificaciones(db, filas_ok, current.id, current.nombre)
 
-    # Recalcular contratos solo de las filas que se cargaron
-    contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
-
+    # Registrar en log
     log = CargaLog(
         usuario_id     = current.id,
         usuario_nombre = current.nombre,
-        archivo_nombre = archivo.filename,
-        contrato       = ", ".join(contratos_cargados),
-        periodo        = f"{periodo_anio}-{periodo_mes:02d}",
+        archivo_nombre = cached["archivo"],
+        contrato       = ", ".join(c for c in contratos_cargados if c),
+        periodo        = f"{cached['periodo_anio']}-{cached['periodo_mes']:02d}",
         filas_cargadas = carga["insertadas"],
         filas_error    = carga["omitidas"],
         estado         = "ok" if not carga["errores"] else "parcial",
@@ -109,18 +153,23 @@ async def confirmar(
     db.add(log)
     db.commit()
 
+    # Limpiar caché — ya no se necesita
+    limpiar(cache_id)
+
     return {
         "mensaje":    f"{carga['insertadas']} filas cargadas correctamente",
         "insertadas": carga["insertadas"],
         "omitidas":   carga["omitidas"],
         "errores":    carga["errores"][:10],
     }
+
+
+# ── Historial ─────────────────────────────────────────────────
 @router.get("/historial")
 def historial(
     current: Usuario = Depends(get_current_user),
     db: Session      = Depends(get_db),
 ):
-    """Historial de cargas del usuario (o todas si es admin)."""
     if current.rol == "admin":
         rows = db.execute(text("""
             SELECT id, usuario_nombre, archivo_nombre, contrato,
@@ -138,27 +187,27 @@ def historial(
     return [dict(r._mapping) for r in rows]
 
 
+# ── Resumen ───────────────────────────────────────────────────
 @router.get("/resumen")
 def resumen(
     current: Usuario = Depends(get_current_user),
     db: Session      = Depends(get_db),
 ):
-    """Total facturado por contrato y mes para el usuario actual."""
     if current.rol == "admin":
         filtro = ""
         params: dict = {}
     else:
-        ks = ", ".join(f"'{k}'" for k in current.contratos_list)
+        ks     = ", ".join(f"'{k}'" for k in current.contratos_list)
         filtro = f"AND dc.codigo_k IN ({ks})"
         params = {}
 
     rows = db.execute(text(f"""
         SELECT
-            DATE_FORMAT(fc.fecha, '%Y-%m')   AS periodo,
-            dc.codigo_k                       AS contrato,
+            DATE_FORMAT(fc.fecha, '%Y-%m') AS periodo,
+            dc.codigo_k                    AS contrato,
             fc.tipo,
-            COUNT(*)                          AS lineas,
-            SUM(fc.total_mes)                 AS monto_total
+            COUNT(*)                       AS lineas,
+            SUM(fc.total_mes)              AS monto_total
         FROM fact_certificaciones fc
         JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
         WHERE 1=1 {filtro}
@@ -170,15 +219,7 @@ def resumen(
     return [dict(r._mapping) for r in rows]
 
 
-def _sumar_total(filas: list[dict]) -> float:
-    total = 0.0
-    for f in filas:
-        try:
-            total += float(f.get("total_mes") or 0)
-        except (ValueError, TypeError):
-            pass
-    return round(total, 2)
-
+# ── Detalle ───────────────────────────────────────────────────
 @router.get("/detalle")
 def detalle(
     periodo: str,
@@ -201,3 +242,26 @@ def detalle(
         ORDER BY di.item_codigo
     """), {"k": contrato, "periodo": periodo}).fetchall()
     return [dict(r._mapping) for r in rows]
+
+
+# ── Provincias ────────────────────────────────────────────────
+@router.get("/provincias")
+def provincias(
+    current: Usuario = Depends(get_current_user),
+    db: Session      = Depends(get_db),
+):
+    rows = db.execute(text(
+        "SELECT id, provincia FROM ma_provincias WHERE activo = 1 ORDER BY provincia"
+    )).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+# ── Helper ────────────────────────────────────────────────────
+def _sumar_total(filas: list[dict]) -> float:
+    total = 0.0
+    for f in filas:
+        try:
+            total += float(f.get("total_mes") or 0)
+        except (ValueError, TypeError):
+            pass
+    return round(total, 2)

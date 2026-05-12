@@ -150,7 +150,6 @@ def _extraer_meta(df: pd.DataFrame, nombre_hoja: str, anio: int, mes: int) -> di
     }
 
     # Intentar detectar el K desde el nombre de la hoja
-    import re
     m = re.search(r'K\d+', nombre_hoja.upper())
     if m:
         meta["k_gasnor"] = m.group(0)
@@ -183,49 +182,60 @@ def _procesar_fila(row, header_vals, col_item, hoja, num_fila, archivo, meta):
             nu = n.upper()
             if nu in header_vals:
                 v = row.get(nu)
+                # Extraer valor escalar si es Series
+                if isinstance(v, pd.Series):
+                    v = v.iloc[0] if len(v) > 0 else None
                 if pd.notna(v) and str(v).strip() not in ("", "nan", "NaT"):
                     return v
         return None
 
     def fmt_str(v):
-        if v is None or (isinstance(v, float) and math.isnan(v)): return None
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
         s = str(v).strip()
         return s if s and s.upper() not in ("NAN", "NAT", "NONE", "#N/A") else None
 
     def fmt_num(v):
-        if v is None or (isinstance(v, float) and math.isnan(v)): return None
-        if isinstance(v, (int, float)): return str(v)
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        if isinstance(v, (int, float)):
+            return str(v)
         s = re.sub(r"[\$\s]", "", str(v).strip())
         if "," in s and "." in s:
             s = s.replace(".", "").replace(",", ".")
         elif "," in s:
             s = s.replace(",", ".")
-        try: float(s); return s
-        except: return None
+        try:
+            float(s)
+            return s
+        except:
+            return None
 
     def fmt_item(v):
-        if v is None or (isinstance(v, float) and math.isnan(v)): return ""
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return ""
         s = str(v).strip()
         try:
             f = float(s.replace(",", "."))
             return str(int(f)) if f == int(f) else str(round(f, 4))
-        except: return s
+        except:
+            return s
 
     # Extraer valores
-    item_codigo    = fmt_item(get_col("ÍTEMS", "ITEMS"))
-    nombre_contrato= fmt_str(get_col("NOMBRE CONTRATO"))
-    tarea          = fmt_str(get_col("TAREA"))
-    contrato_raw   = fmt_str(get_col("K GASNOR"))
-    contrato       = (contrato_raw or "").strip().upper() or meta.get("k_gasnor", "")
-    unidad_medida  = fmt_str(get_col("UM"))
-    ptos_gasnor    = fmt_num(get_col("PTOS. GASNOR", "PTOS GASNOR"))
-    tipo           = fmt_str(get_col("TIPO"))
-    contratista    = fmt_str(get_col("CONTRATISTA"))
-    provincia      = fmt_str(get_col("PROVINCIA"))
-    cantidades     = fmt_num(get_col("CANTIDADES"))
-    precio_unit    = fmt_num(get_col("$ UNITARIO MES"))
-    total_mes      = fmt_num(get_col("$ TOTAL MES"))
-    observaciones  = fmt_str(get_col("OBSERVACIONES"))
+    item_codigo     = fmt_item(get_col("ÍTEMS", "ITEMS"))
+    nombre_contrato = fmt_str(get_col("NOMBRE CONTRATO"))
+    tarea           = fmt_str(get_col("TAREA"))
+    contrato_raw    = fmt_str(get_col("K GASNOR"))
+    contrato        = (contrato_raw or "").strip().upper() or meta.get("k_gasnor", "")
+    unidad_medida   = fmt_str(get_col("UM"))
+    ptos_gasnor     = fmt_num(get_col("PTOS. GASNOR", "PTOS GASNOR"))
+    tipo            = fmt_str(get_col("TIPO"))
+    contratista     = fmt_str(get_col("CONTRATISTA"))
+    provincia       = fmt_str(get_col("PROVINCIA"))
+    cantidades      = fmt_num(get_col("CANTIDADES"))
+    precio_unit     = fmt_num(get_col("$ UNITARIO MES"))
+    total_mes       = fmt_num(get_col("$ TOTAL MES"))
+    observaciones   = fmt_str(get_col("OBSERVACIONES"))
 
     # Normalizar provincia
     if provincia:
@@ -240,24 +250,24 @@ def _procesar_fila(row, header_vals, col_item, hoja, num_fila, archivo, meta):
 
     if not provincia:
         errores.append({"hoja": hoja, "fila": num_fila, "campo": "provincia",
-                         "mensaje": "Provincia vacía."})
+                        "mensaje": "Provincia vacía."})
         tiene_error = True
 
     if not contrato:
         errores.append({"hoja": hoja, "fila": num_fila, "campo": "contrato",
-                         "mensaje": "Contrato K no detectado."})
+                        "mensaje": "Contrato K no detectado."})
         tiene_error = True
 
     if cantidades and float(cantidades) == 0:
         errores.append({"hoja": hoja, "fila": num_fila, "campo": "cantidades",
-                         "mensaje": "Cantidad es 0."})
+                        "mensaje": "Cantidad es 0."})
 
     if cantidades and precio_unit and total_mes:
         calc = round(float(cantidades) * float(precio_unit), 2)
         real = round(float(total_mes), 2)
         if abs(calc - real) > 2:
             errores.append({"hoja": hoja, "fila": num_fila, "campo": "total_mes",
-                             "mensaje": f"Total ({real}) ≠ cant × precio ({calc:.2f})"})
+                            "mensaje": f"Total ({real}) ≠ cant × precio ({calc:.2f})"})
 
     fila = {
         "hoja_origen":     hoja,
@@ -286,8 +296,10 @@ def _procesar_fila(row, header_vals, col_item, hoja, num_fila, archivo, meta):
 def _extraer_region(nombre_hoja: str) -> str:
     """Extrae Zona Norte/Sur del nombre de la hoja si existe."""
     h = nombre_hoja.upper()
-    if "NORTE" in h: return "Norte"
-    if "SUR"   in h: return "Sur"
+    if "NORTE" in h:
+        return "Norte"
+    if "SUR" in h:
+        return "Sur"
     return ""
 
 
