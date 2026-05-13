@@ -24,6 +24,7 @@ async def preview(
     periodo_anio: int   = Form(...),
     periodo_mes: int    = Form(...),
     current: Usuario    = Depends(get_current_user),
+    db: Session         = Depends(get_db),
 ):
     """
     Parsea el Excel, guarda el resultado en caché y devuelve
@@ -43,11 +44,25 @@ async def preview(
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
 
-    # Filtrar filas con cantidad > 0 para el preview
     filas_validas = [
-        f for f in resultado["filas"]
-        if float(f.get("cantidades") or 0) != 0
-    ]
+    f for f in resultado["filas"]
+    if float(f.get("cantidades") or 0) != 0]
+
+    # Validar ítems contra dim_item
+    for fila in filas_validas:
+          item_codigo = fila.get("item_codigo", "").replace(".", ",")
+    contrato    = fila.get("contrato", "")
+
+    existe = db.execute(text("""
+        SELECT 1 FROM dim_item di
+        JOIN dim_contrato dc ON di.id_contrato = dc.id_contrato
+        WHERE REPLACE(di.item_codigo, '.', ',') = :item
+        LIMIT 1
+    """), {"item": item_codigo}).fetchone()
+
+    if not existe:
+        fila["tiene_error"] = True
+        fila["error_detalle"] = f"Ítem {fila['item_codigo']} no encontrado en el maestro"
 
     resumen = {
         "total":      len(filas_validas),
