@@ -42,10 +42,6 @@ async def preview(
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
-    # Verificar acceso a los contratos del archivo
-    contratos_en_archivo = {f["contrato"] for f in resultado["filas"] if f.get("contrato")}
-    for k in contratos_en_archivo:
-        check_contrato_access(current, k)
 
     # Filtrar filas con cantidad > 0 para el preview
     filas_validas = [
