@@ -49,19 +49,22 @@ async def preview(
     if float(f.get("cantidades") or 0) != 0
 ]
 
-# Validar ítems contra dim_item
     for fila in filas_validas:
-        item_codigo = fila.get("item_codigo", "").replace(".", ",")
-
-        existe = db.execute(text("""
-               SELECT 1 FROM dim_item
-               WHERE REPLACE(item_codigo, '.', ',') = :item
-               LIMIT 1
+           item_codigo = fila.get("item_codigo", "").replace(".", ",")
+    
+    print(f"Validando item: '{item_codigo}'")  # ← agregar
+    
+    existe = db.execute(text("""
+        SELECT 1 FROM dim_item
+        WHERE REPLACE(item_codigo, '.', ',') = :item
+        LIMIT 1
     """), {"item": item_codigo}).fetchone()
-
+    
+    print(f"  Existe: {existe}")  # ← agregar
+    
     if not existe:
-        fila["tiene_error"]    = True
-        fila["error_detalle"]  = f"Ítem {fila['item_codigo']} no encontrado en el maestro"
+        fila["tiene_error"]   = True
+        fila["error_detalle"] = f"Ítem {fila['item_codigo']} no encontrado en el maestro"
 
     resumen = {
         "total":      len(filas_validas),
