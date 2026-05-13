@@ -3,7 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import Base, engine, check_connection
-from app.routers import auth, certificaciones, admin
+from app.routers import auth, certificaciones, admin, items
+
+
 
 settings = get_settings()
 
@@ -25,7 +27,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(certificaciones.router)
 app.include_router(admin.router)
-
+app.include_router(items.router)
 
 @app.on_event("startup")
 def startup():
