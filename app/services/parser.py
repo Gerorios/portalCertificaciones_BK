@@ -304,16 +304,14 @@ def _extraer_region(nombre_hoja: str) -> str:
 
 
 def _es_item_valido(v) -> bool:
-    """Devuelve True si el valor puede ser un código de ítem válido."""
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return False
     s = str(v).strip()
     if not s or s.upper() in ("NAN", "NAT", "NONE", "ÍTEMS", "ITEMS"):
         return False
-    # Acepta enteros, decimales con punto o coma, y alfanuméricos tipo D858
+    # Acepta: enteros, decimales, alfanuméricos tipo D858, 116-a, 359 bis
     try:
         float(s.replace(",", "."))
         return True
     except (ValueError, TypeError):
-        # Alfanumérico tipo D858
-        return bool(re.match(r"^[A-Za-z]?\d+[,.]?\d*$", s))
+        return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\s\-_,\.]*$", s))
