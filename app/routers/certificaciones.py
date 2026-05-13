@@ -26,69 +26,58 @@ async def preview(
     current: Usuario    = Depends(get_current_user),
     db: Session         = Depends(get_db),
 ):
-    """
-    Parsea el Excel, guarda el resultado en caché y devuelve
-    las filas con validaciones + un cache_id para confirmar.
-    NO escribe en la base de datos.
-    """
     contenido = await archivo.read()
     if len(contenido) > MAX_FILE_MB * 1024 * 1024:
         raise HTTPException(400, f"El archivo supera los {MAX_FILE_MB} MB")
 
     if archivo.filename.lower().endswith(".pdf"):
-         resultado = parsear_pdf_bytes(contenido, archivo.filename, periodo_anio, periodo_mes) 
+        resultado = parsear_pdf_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
     else:
-         resultado = parsear_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
+        resultado = parsear_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
 
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
-
     filas_validas = [
-    f for f in resultado["filas"]
-    if float(f.get("cantidades") or 0) != 0
-]
+        f for f in resultado["filas"]
+        if float(f.get("cantidades") or 0) != 0
+    ]
 
+    # Validar cada ítem contra dim_item
     for fila in filas_validas:
-           item_codigo = fila.get("item_codigo", "").replace(".", ",")
-    
-    print(f"Validando item: '{item_codigo}'")  # ← agregar
-    
-    existe = db.execute(text("""
-        SELECT 1 FROM dim_item
-        WHERE REPLACE(item_codigo, '.', ',') = :item
-        LIMIT 1
-    """), {"item": item_codigo}).fetchone()
-    
-    print(f"  Existe: {existe}")  # ← agregar
-    
-    if not existe:
-        fila["tiene_error"]   = True
-        fila["error_detalle"] = f"Ítem {fila['item_codigo']} no encontrado en el maestro"
+        item_codigo = fila.get("item_codigo", "").replace(".", ",")
+        existe = db.execute(text("""
+            SELECT 1 FROM dim_item
+            WHERE REPLACE(item_codigo, '.', ',') = :item
+            LIMIT 1
+        """), {"item": item_codigo}).fetchone()
+
+        if not existe:
+            fila["tiene_error"]   = True
+            fila["error_detalle"] = f"Ítem {fila['item_codigo']} no encontrado en el maestro"
 
     resumen = {
-        "total":      len(filas_validas),
-        "con_error":  sum(1 for f in filas_validas if f["tiene_error"]),
-        "total_mes":  _sumar_total(filas_validas),
+        "total":     len(filas_validas),
+        "con_error": sum(1 for f in filas_validas if f["tiene_error"]),
+        "total_mes": _sumar_total(filas_validas),
     }
 
-    # Guardar resultado completo en caché
     id_cache = guardar({
-        "resultado":     resultado,
-        "archivo":       archivo.filename,
-        "periodo_anio":  periodo_anio,
-        "periodo_mes":   periodo_mes,
-        "usuario_id":    current.id,
+        "resultado":    resultado,
+        "archivo":      archivo.filename,
+        "periodo_anio": periodo_anio,
+        "periodo_mes":  periodo_mes,
+        "usuario_id":   current.id,
     })
 
     return {
-        "cache_id":  id_cache,
-        "archivo":   resultado["archivo"],
-        "hojas":     resultado["hojas"],
-        "periodo":   resultado["periodo"],
-        "resumen":   resumen,
-        "filas":     filas_validas,
-        "errores":   resultado["errores"],
+        "cache_id": id_cache,
+        "archivo":  resultado["archivo"],
+        "hojas":    resultado["hojas"],
+        "periodo":  resultado["periodo"],
+        "resumen":  resumen,
+        "filas":    filas_validas,
+        "errores":  resultado["errores"],
     }
 
 
@@ -101,27 +90,17 @@ async def confirmar(
     current: Usuario    = Depends(get_current_user),
     db: Session         = Depends(get_db),
 ):
-    """
-    Carga las filas a la BD usando el caché del preview.
-    Usa las filas editadas por el usuario si las hay.
-    """
     hojas_seleccionadas = json.loads(hojas)
     filas_del_frontend  = json.loads(filas_editadas)
 
-    # Recuperar del caché
     cached = recuperar(cache_id)
     if not cached:
-        raise HTTPException(
-            400,
-            "La sesión expiró (30 minutos). Volvé a subir el archivo."
-        )
+        raise HTTPException(400, "La sesión expiró (30 minutos). Volvé a subir el archivo.")
 
-    # Verificar que el usuario que confirma es el mismo que hizo el preview
     if cached["usuario_id"] != current.id:
         raise HTTPException(403, "No autorizado")
 
     if filas_del_frontend:
-        # Usar las filas editadas por el usuario — estas tienen las correcciones
         filas_ok = [
             f for f in filas_del_frontend
             if not f.get("tiene_error")
@@ -130,7 +109,6 @@ async def confirmar(
         ]
         contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
     else:
-        # Usar las filas del caché filtradas por hojas seleccionadas
         resultado = cached["resultado"]
         filas_ok = [
             f for f in resultado["filas"]
@@ -140,7 +118,6 @@ async def confirmar(
         ]
         contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
 
-    # Verificar acceso
     for k in contratos_cargados:
         if k:
             check_contrato_access(current, k)
@@ -148,29 +125,26 @@ async def confirmar(
     if not filas_ok:
         raise HTTPException(422, "No hay filas válidas para cargar")
 
-    # Asegurar archivo_origen en todas las filas
     for f in filas_ok:
         if not f.get("archivo_origen"):
             f["archivo_origen"] = cached["archivo"]
 
     carga = cargar_certificaciones(db, filas_ok, current.id, current.nombre)
 
-    # Registrar en log
     log = CargaLog(
-        usuario_id     = current.id,
-        usuario_nombre = current.nombre,
-        archivo_nombre = cached["archivo"],
-        contrato       = ", ".join(c for c in contratos_cargados if c),
-        periodo        = f"{cached['periodo_anio']}-{cached['periodo_mes']:02d}",
-        filas_cargadas = carga["insertadas"],
-        filas_error    = carga["omitidas"],
-        estado         = "ok" if not carga["errores"] else "parcial",
-        detalle_errores= str(carga["errores"])[:2000] if carga["errores"] else None,
+        usuario_id      = current.id,
+        usuario_nombre  = current.nombre,
+        archivo_nombre  = cached["archivo"],
+        contrato        = ", ".join(c for c in contratos_cargados if c),
+        periodo         = f"{cached['periodo_anio']}-{cached['periodo_mes']:02d}",
+        filas_cargadas  = carga["insertadas"],
+        filas_error     = carga["omitidas"],
+        estado          = "ok" if not carga["errores"] else "parcial",
+        detalle_errores = str(carga["errores"])[:2000] if carga["errores"] else None,
     )
     db.add(log)
     db.commit()
 
-    # Limpiar caché — ya no se necesita
     limpiar(cache_id)
 
     return {
