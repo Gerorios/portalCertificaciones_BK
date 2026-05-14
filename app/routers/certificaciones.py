@@ -161,7 +161,7 @@ def historial(
     current: Usuario = Depends(get_current_user),
     db: Session      = Depends(get_db),
 ):
-    if current.rol == "admin":
+    if current.rol in ("admin", "gerente"):
         rows = db.execute(text("""
             SELECT id, usuario_nombre, archivo_nombre, contrato,
                    periodo, filas_cargadas, estado, cargado_en
@@ -184,7 +184,7 @@ def resumen(
     current: Usuario = Depends(get_current_user),
     db: Session      = Depends(get_db),
 ):
-    if current.rol == "admin":
+    if current.rol in ("admin", "gerente"):
         filtro = ""
         params: dict = {}
     else:
