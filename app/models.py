@@ -9,7 +9,7 @@ class Usuario(Base):
     nombre      = Column(String(100), nullable=False)
     email       = Column(String(100), unique=True, nullable=False)
     password    = Column(String(255), nullable=False, comment="hash bcrypt")
-    rol         = Column(Enum("admin", "jefe"), nullable=False, default="jefe")
+    rol         = Column(Enum("admin", "jefe", "gerente"), nullable=False, default="jefe")
     contratos   = Column(String(50), nullable=True, comment="ej: K2,K6")
     activo      = Column(Boolean, nullable=False, default=True)
     creado_en   = Column(DateTime, server_default=func.now())
