@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import Base, engine, check_connection
-from app.routers import auth, certificaciones, admin, items
+from app.routers import auth, certificaciones, admin, items, analytics
 
 
 
@@ -28,6 +28,8 @@ app.include_router(auth.router)
 app.include_router(certificaciones.router)
 app.include_router(admin.router)
 app.include_router(items.router)
+app.include_router(analytics.router)
+
 
 @app.on_event("startup")
 def startup():
