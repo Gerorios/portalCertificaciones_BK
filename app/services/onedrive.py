@@ -7,13 +7,12 @@ Crea automáticamente la estructura de carpetas:
 """
 import requests
 from typing import Optional
+import os
 
-
-# ── Configuración ─────────────────────────────────────────────
-TENANT_ID     = "08487b0c-70cd-473c-80da-193f2f00be92"
-CLIENT_ID     = "1b3d7b6d-23c8-412b-b223-d5188e4df9c6"
-CLIENT_SECRET = "4f88Q~pqpT3zXbw1IQ_TdoxhHANzf4vtihMFIcYV"  # regenerar después
-ONEDRIVE_USER = "administracion@serytecsas.onmicrosoft.com"
+TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
+CLIENT_ID     = os.environ.get("AZURE_CLIENT_ID", "")
+CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
+ONEDRIVE_USER = os.environ.get("ONEDRIVE_USER", "")
 CARPETA_RAIZ  = "Certificaciones"
 
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
