@@ -1,114 +1,140 @@
 """
 parser.py — busca columnas por nombre, no por posición.
 Robusto ante cualquier variación de formato del Excel de Naturgy.
+Usa calamine como fallback si openpyxl falla.
 """
 import io, re, math
 from typing import Any
 import pandas as pd
 
-# Mapeo flexible: variantes de nombre → nombre canónico
+# Mapeo flexible: nombre canónico → variantes posibles en el header
 COL_ALIAS = {
-    "item_codigo":    ["ÍTEMS", "ITEMS", "ÍTEM", "ITEM"],
-    "nombre_contrato":["NOMBRE CONTRATO", "NOMBRE_CONTRATO"],
-    "tarea":          ["TAREA"],
-    "contrato":       ["K GASNOR", "K_GASNOR", "K GASNOR "],
-    "unidad_medida":  ["UM", "UNIDAD", "UNIDAD MEDIDA"],
-    "ptos_gasnor":    ["PTOS. GASNOR", "PTOS GASNOR", "PUNTOS GASNOR"],
-    "tipo":           ["TIPO"],
-    "contratista":    ["CONTRATISTA"],
-    "provincia":      ["PROVINCIA"],
-    "cantidades":     ["CANTIDADES", "CANTIDAD"],
-    "precio_unitario":["$ UNITARIO MES", "UNITARIO MES", "$ UNITARIO", "PRECIO UNITARIO"],
-    "total_mes":      ["$ TOTAL MES", "TOTAL MES", "$ TOTAL", "TOTAL"],
-    "observaciones":  ["OBSERVACIONES", "OBS", "OBSERVACION"],
+    "item_codigo":     ["ÍTEMS", "ITEMS", "ÍTEM", "ITEM"],
+    "nombre_contrato": ["NOMBRE CONTRATO", "NOMBRE_CONTRATO"],
+    "tarea":           ["TAREA"],
+    "contrato":        ["K GASNOR", "K_GASNOR", "K GASNOR "],
+    "unidad_medida":   ["UM", "UNIDAD", "UNIDAD MEDIDA"],
+    "ptos_gasnor":     ["PTOS. GASNOR", "PTOS GASNOR", "PUNTOS GASNOR"],
+    "tipo":            ["TIPO"],
+    "contratista":     ["CONTRATISTA"],
+    "provincia":       ["PROVINCIA"],
+    "cantidades":      ["CANTIDADES", "CANTIDAD"],
+    "precio_unitario": ["$ UNITARIO MES", "UNITARIO MES", "$ UNITARIO", "PRECIO UNITARIO"],
+    "total_mes":       ["$ TOTAL MES", "TOTAL MES", "$ TOTAL", "TOTAL"],
+    "observaciones":   ["OBSERVACIONES", "OBS", "OBSERVACION"],
 }
 
 
-def _mapear_columnas(header_vals: list[str]) -> dict[str, str]:
-    """
-    Dado el header, devuelve un dict {nombre_canonico: nombre_en_header}
-    para cada columna que encontremos.
-    """
-    header_upper = [str(v).strip().upper() for v in header_vals]
+def _mapear_columnas(header_upper: list[str]) -> dict[str, str]:
+    """Dado el header en UPPER, devuelve {nombre_canonico: nombre_en_header}."""
     mapa = {}
     for canon, aliases in COL_ALIAS.items():
         for alias in aliases:
             if alias in header_upper:
-                # Usar el nombre real del header (con mayúsculas originales)
-                idx = header_upper.index(alias)
-                mapa[canon] = header_vals[idx]
+                mapa[canon] = alias
                 break
     return mapa
 
 
-def parsear_bytes(contenido: bytes, nombre_archivo: str,
-                  periodo_anio: int, periodo_mes: int) -> dict:
+def parsear_bytes(
+    contenido: bytes,
+    nombre_archivo: str,
+    periodo_anio: int,
+    periodo_mes: int,
+) -> dict:
     resultado: dict[str, Any] = {
-        "archivo": nombre_archivo, "hojas": [],
-        "filas": [], "errores": [],
+        "archivo": nombre_archivo,
+        "hojas":   [],
+        "filas":   [],
+        "errores": [],
         "periodo": f"{periodo_anio}-{periodo_mes:02d}",
     }
+
     try:
         xl = pd.ExcelFile(io.BytesIO(contenido), engine="openpyxl")
     except Exception:
         try:
             xl = pd.ExcelFile(io.BytesIO(contenido), engine="calamine")
         except Exception as e:
-            resultado["errores"].append({"hoja":"—","fila":0,"campo":"archivo",
-                                          "mensaje":f"No se pudo abrir: {e}"})
+            resultado["errores"].append({
+                "hoja": "—", "fila": 0, "campo": "archivo",
+                "mensaje": f"No se pudo abrir el archivo: {e}",
+            })
             return resultado
 
     hojas_cert = [s for s in xl.sheet_names if s.strip().upper().startswith("CERTIF")]
     if not hojas_cert:
         hojas_cert = xl.sheet_names
+
     resultado["hojas"] = hojas_cert
 
     for hoja in hojas_cert:
-        _procesar_hoja(xl, hoja, nombre_archivo, periodo_anio, periodo_mes, resultado)
+        _procesar_hoja(xl, hoja, nombre_archivo, anio=periodo_anio,
+                       mes=periodo_mes, resultado=resultado, contenido=contenido)
+
     return resultado
 
 
-def _procesar_hoja(xl, nombre_hoja, nombre_archivo, anio, mes, resultado):
+def _procesar_hoja(xl, nombre_hoja, nombre_archivo, anio, mes, resultado, contenido=None):
+    # Intentar con openpyxl primero
     try:
-        df_raw = pd.read_excel(xl, sheet_name=nombre_hoja, header=None,
-                               engine=getattr(xl, "engine", None))
-    except Exception as e:
-        resultado["errores"].append({"hoja":nombre_hoja,"fila":0,"campo":"hoja",
-                                      "mensaje":f"No se pudo leer: {e}"})
-        return
+        df_raw = pd.read_excel(
+            xl, sheet_name=nombre_hoja, header=None,
+            engine=getattr(xl, "engine", None)
+        )
+    except Exception:
+        # Fallback a calamine si openpyxl falla
+        try:
+            df_raw = pd.read_excel(
+                io.BytesIO(contenido), sheet_name=nombre_hoja,
+                header=None, engine="calamine"
+            )
+        except Exception as e:
+            resultado["errores"].append({
+                "hoja": nombre_hoja, "fila": 0, "campo": "hoja",
+                "mensaje": f"No se pudo leer: {e}",
+            })
+            return
 
     # Buscar fila que contenga ÍTEMS/ITEMS
     header_idx = _encontrar_header_idx(df_raw)
     if header_idx is None:
-        resultado["errores"].append({"hoja":nombre_hoja,"fila":0,"campo":"header",
-                                      "mensaje":"No se encontró la fila de encabezado (ÍTEMS)."})
+        resultado["errores"].append({
+            "hoja": nombre_hoja, "fila": 0, "campo": "header",
+            "mensaje": "No se encontró la fila de encabezado (ÍTEMS).",
+        })
         return
 
     meta = _extraer_meta(df_raw, nombre_hoja, anio, mes)
 
-    # Header como lista de strings (upper para comparar)
-    header_raw  = list(df_raw.iloc[header_idx])
-    header_upper= [str(v).strip().upper() if pd.notna(v) else "" for v in header_raw]
+    # Header como lista de strings en UPPER
+    header_upper = [
+        str(v).strip().upper() if pd.notna(v) else ""
+        for v in df_raw.iloc[header_idx]
+    ]
 
     # Mapear columnas por nombre
     col_map = _mapear_columnas(header_upper)
 
     if "item_codigo" not in col_map:
-        resultado["errores"].append({"hoja":nombre_hoja,"fila":0,"campo":"header",
-                                      "mensaje":f"Columna ÍTEMS no encontrada. Header: {header_upper[:12]}"})
+        resultado["errores"].append({
+            "hoja": nombre_hoja, "fila": 0, "campo": "header",
+            "mensaje": f"Columna ÍTEMS no encontrada. Header: {header_upper[:12]}",
+        })
         return
 
-    # Construir df con header
+    # Construir df con header en UPPER
     df_datos = df_raw.iloc[header_idx + 1:].copy()
-    df_datos.columns = header_upper          # nombres en UPPER para buscar
+    df_datos.columns = header_upper
     df_datos = df_datos.reset_index(drop=True)
 
-    # Columna de ítem
-    col_item = col_map["item_codigo"]        # nombre upper de la col
+    col_item = col_map["item_codigo"]
     df_datos = df_datos[df_datos[col_item].apply(_es_item_valido)]
 
     for idx, (_, row) in enumerate(df_datos.iterrows(), start=header_idx + 2):
-        fila, errores = _procesar_fila(row, col_map, nombre_hoja, idx, nombre_archivo, meta)
+        fila, errores = _procesar_fila(
+            row, col_map, nombre_hoja, idx, nombre_archivo, meta
+        )
         resultado["filas"].append(fila)
         resultado["errores"].extend(errores)
 
@@ -123,33 +149,32 @@ def _encontrar_header_idx(df: pd.DataFrame):
 
 
 def _extraer_meta(df: pd.DataFrame, nombre_hoja: str, anio: int, mes: int) -> dict:
-    meta = {"k_gasnor": None, "nro_np": None,
-            "fecha": f"{anio}-{mes:02d}-01"}
+    meta = {"k_gasnor": None, "nro_np": None, "fecha": f"{anio}-{mes:02d}-01"}
+
     m = re.search(r'K\d+', nombre_hoja.upper())
     if m:
         meta["k_gasnor"] = m.group(0)
+
     for _, row in df.iloc[:13].iterrows():
-        vals = [str(v).strip() for v in row if pd.notna(v) and str(v).strip() not in ("","nan")]
+        vals = [str(v).strip() for v in row
+                if pd.notna(v) and str(v).strip() not in ("", "nan")]
         for v in vals:
             if re.match(r"^K\d+$", v.upper()) and not meta["k_gasnor"]:
                 meta["k_gasnor"] = v.upper()
         fila_str = " ".join(vals).upper()
         if ("NRO. DE NP" in fila_str or "NRO DE NP" in fila_str) and not meta["nro_np"]:
             for i, v in enumerate(vals):
-                if "NP" in v.upper() and i+1 < len(vals):
-                    meta["nro_np"] = vals[i+1]
+                if "NP" in v.upper() and i + 1 < len(vals):
+                    meta["nro_np"] = vals[i + 1]
+
     return meta
 
 
 def _procesar_fila(row, col_map: dict, hoja, num_fila, archivo, meta):
-    """
-    col_map: {nombre_canonico: nombre_upper_en_header}
-    row: Series con index = nombres upper del header
-    """
+    """col_map: {canon: nombre_upper_en_header}"""
     errores = []
 
     def get(campo):
-        """Obtiene el valor de la columna canónica, o None si no existe."""
         col = col_map.get(campo)
         if col is None:
             return None
@@ -160,35 +185,41 @@ def _procesar_fila(row, col_map: dict, hoja, num_fila, archivo, meta):
         return s if s and s.upper() not in ("NAN", "NAT", "NONE", "#N/A", "") else None
 
     def fmt_num(v):
-        if v is None: return None
+        if v is None:
+            return None
         s = re.sub(r"[\$\s]", "", v)
         if "," in s and "." in s:
             s = s.replace(".", "").replace(",", ".")
         elif "," in s:
             s = s.replace(",", ".")
-        try: float(s); return s
-        except: return None
+        try:
+            float(s)
+            return s
+        except (ValueError, TypeError):
+            return None
 
     def fmt_item(v):
-        if v is None: return ""
+        if v is None:
+            return ""
         try:
             f = float(v.replace(",", "."))
             return str(int(f)) if f == int(f) else str(round(f, 4))
-        except: return v
+        except (ValueError, TypeError):
+            return v
 
-    item_codigo    = fmt_item(get("item_codigo"))
-    nombre_contrato= get("nombre_contrato")
-    tarea          = get("tarea")
-    contrato       = (get("contrato") or "").strip().upper() or meta.get("k_gasnor","")
-    unidad_medida  = get("unidad_medida")
-    ptos_gasnor    = fmt_num(get("ptos_gasnor"))
-    tipo           = get("tipo")
-    contratista    = get("contratista")
-    provincia      = (get("provincia") or "").strip().title() or None
-    cantidades     = fmt_num(get("cantidades"))
-    precio_unit    = fmt_num(get("precio_unitario"))
-    total_mes      = fmt_num(get("total_mes"))
-    observaciones  = get("observaciones")
+    item_codigo     = fmt_item(get("item_codigo"))
+    nombre_contrato = get("nombre_contrato")
+    tarea           = get("tarea")
+    contrato        = (get("contrato") or "").strip().upper() or meta.get("k_gasnor", "")
+    unidad_medida   = get("unidad_medida")
+    ptos_gasnor     = fmt_num(get("ptos_gasnor"))
+    tipo            = get("tipo")
+    contratista     = get("contratista")
+    provincia       = (get("provincia") or "").strip().title() or None
+    cantidades      = fmt_num(get("cantidades"))
+    precio_unit     = fmt_num(get("precio_unitario"))
+    total_mes       = fmt_num(get("total_mes"))
+    observaciones   = get("observaciones")
 
     # Normalizar contrato
     if contrato and not contrato.startswith("K"):
@@ -196,16 +227,16 @@ def _procesar_fila(row, col_map: dict, hoja, num_fila, archivo, meta):
 
     tiene_error = False
     if not provincia:
-        errores.append({"hoja":hoja,"fila":num_fila,"campo":"provincia",
-                         "mensaje":"Provincia vacía."})
+        errores.append({"hoja": hoja, "fila": num_fila, "campo": "provincia",
+                        "mensaje": "Provincia vacía."})
         tiene_error = True
     if not contrato:
-        errores.append({"hoja":hoja,"fila":num_fila,"campo":"contrato",
-                         "mensaje":"Contrato K no detectado."})
+        errores.append({"hoja": hoja, "fila": num_fila, "campo": "contrato",
+                        "mensaje": "Contrato K no detectado."})
         tiene_error = True
     if cantidades and float(cantidades) == 0:
-        errores.append({"hoja":hoja,"fila":num_fila,"campo":"cantidades",
-                         "mensaje":"Cantidad es 0."})
+        errores.append({"hoja": hoja, "fila": num_fila, "campo": "cantidades",
+                        "mensaje": "Cantidad es 0."})
 
     return {
         "hoja_origen":     hoja,
@@ -241,10 +272,10 @@ def _es_item_valido(v) -> bool:
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return False
     s = str(v).strip()
-    if not s or s.upper() in ("NAN","NAT","NONE","ÍTEMS","ITEMS",""):
+    if not s or s.upper() in ("NAN", "NAT", "NONE", "ÍTEMS", "ITEMS", ""):
         return False
     try:
-        float(s.replace(",","."))
+        float(s.replace(",", "."))
         return True
-    except:
+    except (ValueError, TypeError):
         return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\s\-_,\.]*$", s))
