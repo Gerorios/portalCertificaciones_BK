@@ -111,6 +111,10 @@ def _procesar_hoja(xl, nombre_hoja, nombre_archivo, anio, mes, resultado):
     df_datos = df_raw.iloc[header_idx + 1:].copy()
     df_datos.columns = header_vals
     df_datos = df_datos.reset_index(drop=True)
+    
+    if header_vals[0] == "":
+       df_datos = df_datos.iloc[:, 1:]
+       header_vals = header_vals[1:]
 
     # Descartar filas vacías o de totales
     col_item = "ÍTEMS" if "ÍTEMS" in header_vals else "ITEMS"
