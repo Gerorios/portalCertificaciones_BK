@@ -35,6 +35,17 @@ async def preview(
     else:
         resultado = parsear_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
 
+        print(f"DEBUG - Archivo: {archivo.filename}")
+        print(f"DEBUG - Filas totales: {len(resultado['filas'])}")
+        print(f"DEBUG - Errores: {resultado['errores'][:3]}")
+        print(f"DEBUG - Hojas: {resultado['hojas']}")
+
+    filas_validas = [
+       f for f in resultado["filas"]
+         if float(f.get("cantidades") or 0) != 0
+                    ]
+    print(f"DEBUG - Filas con cant>0: {len(filas_validas)}")
+
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
