@@ -65,6 +65,7 @@ async def preview(
     id_cache = guardar({
         "resultado":    resultado,
         "archivo":      archivo.filename,
+        "contenido":    contenido,
         "periodo_anio": periodo_anio,
         "periodo_mes":  periodo_mes,
         "usuario_id":   current.id,
@@ -99,6 +100,20 @@ async def confirmar(
 
     if cached["usuario_id"] != current.id:
         raise HTTPException(403, "No autorizado")
+
+    # Verificar que no se suba el mismo archivo dos veces
+    ya_existe = db.execute(text("""
+        SELECT COUNT(*) FROM carga_log
+        WHERE archivo_nombre = :archivo
+          AND estado != 'error'
+    """), {"archivo": cached["archivo"]}).scalar()
+
+    if ya_existe:
+        raise HTTPException(
+            400,
+            f"El archivo '{cached['archivo']}' ya fue cargado anteriormente. "
+            f"Si necesitás reemplazarlo, eliminá la carga anterior desde el historial."
+        )
 
     if filas_del_frontend:
         filas_ok = [
@@ -146,6 +161,20 @@ async def confirmar(
     db.commit()
 
     limpiar(cache_id)
+
+    # Subir archivo a OneDrive
+    try:
+        from app.services.onedrive import subir_certificacion
+        periodo_str = f"{cached['periodo_anio']}-{cached['periodo_mes']:02d}"
+        for k in contratos_cargados:
+            subir_certificacion(
+                contenido      = cached.get("contenido", b""),
+                nombre_archivo = cached["archivo"],
+                contrato       = k,
+                periodo        = periodo_str,
+            )
+    except Exception as e:
+        print(f"OneDrive upload error: {e}")
 
     return {
         "mensaje":    f"{carga['insertadas']} filas cargadas correctamente",
