@@ -85,9 +85,10 @@ def top_items(
     p["limite"] = limite
     rows = db.execute(text(f"""
         SELECT di.item_codigo,
-               LEFT(fc.tarea, 60) AS tarea,
-               dc.codigo_k        AS contrato,
-               SUM(fc.total_mes)  AS monto_total
+               LEFT(fc.tarea, 60)                        AS tarea,
+               dc.codigo_k                               AS contrato,
+               SUM(fc.total_mes)                         AS monto_total,
+               SUM(fc.cantidades * di.ptos_gasnor)        AS pgn_total
         FROM fact_certificaciones fc
         JOIN dim_item     di ON fc.id_item     = di.id_item
         JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
@@ -106,8 +107,9 @@ def interanual(
     db: Session = Depends(get_db),
 ):
     """
-    Compara mes a mes el año actual vs el año anterior.
-    Devuelve para cada mes: monto año actual, monto año anterior y variación %.
+    Compara mes a mes año actual vs año anterior.
+    Devuelve facturación Y PGN certificado para cada mes y año.
+    PGN = SUM(cantidades * ptos_gasnor del ítem)
     """
     f, p = "", {}
     if contrato:
@@ -116,61 +118,56 @@ def interanual(
 
     rows = db.execute(text(f"""
         SELECT
-            YEAR(fc.fecha)                    AS anio,
-            MONTH(fc.fecha)                   AS mes,
-            DATE_FORMAT(fc.fecha, '%Y-%m')    AS periodo,
-            SUM(fc.total_mes)                 AS monto_total
+            YEAR(fc.fecha)                          AS anio,
+            MONTH(fc.fecha)                         AS mes,
+            DATE_FORMAT(fc.fecha, '%Y-%m')          AS periodo,
+            SUM(fc.total_mes)                       AS monto_total,
+            SUM(fc.cantidades * di.ptos_gasnor)     AS pgn_total
         FROM fact_certificaciones fc
         JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
+        JOIN dim_item     di ON fc.id_item     = di.id_item
         WHERE YEAR(fc.fecha) IN (YEAR(CURDATE()), YEAR(CURDATE()) - 1)
           {f}
         GROUP BY anio, mes, periodo
         ORDER BY mes ASC, anio ASC
     """), p).fetchall()
 
+    # Detectar años disponibles
+    anios = sorted(set(dict(r._mapping)["anio"] for r in rows), reverse=True)
+    anio_actual   = anios[0] if len(anios) > 0 else None
+    anio_anterior = anios[1] if len(anios) > 1 else None
+
     # Organizar por mes
     datos = {}
-    anio_actual   = None
-    anio_anterior = None
-
     for r in rows:
-        d = dict(r._mapping)
-        if anio_actual is None or d["anio"] > anio_actual:
-            anio_actual = d["anio"]
-        if anio_anterior is None or (d["anio"] < anio_actual and d["anio"] > (anio_anterior or 0)):
-            anio_anterior = d["anio"]
-
-    for r in rows:
-        d    = dict(r._mapping)
-        mes  = d["mes"]
-        anio = d["anio"]
+        d   = dict(r._mapping)
+        mes = d["mes"]
         if mes not in datos:
-            datos[mes] = {"mes": mes, "actual": None, "anterior": None}
-        if anio == anio_actual:
-            datos[mes]["actual"]   = float(d["monto_total"] or 0)
-            datos[mes]["periodo_actual"] = d["periodo"]
-        else:
-            datos[mes]["anterior"] = float(d["monto_total"] or 0)
-            datos[mes]["periodo_anterior"] = d["periodo"]
+            datos[mes] = {
+                "mes": mes,
+                "monto_actual":    None, "monto_anterior":    None,
+                "pgn_actual":      None, "pgn_anterior":      None,
+                "var_monto":       None, "var_pgn":           None,
+            }
+        if d["anio"] == anio_actual:
+            datos[mes]["monto_actual"] = float(d["monto_total"] or 0)
+            datos[mes]["pgn_actual"]   = float(d["pgn_total"]   or 0)
+        elif d["anio"] == anio_anterior:
+            datos[mes]["monto_anterior"] = float(d["monto_total"] or 0)
+            datos[mes]["pgn_anterior"]   = float(d["pgn_total"]   or 0)
 
-    resultado = []
-    for mes in sorted(datos.keys()):
-        d        = datos[mes]
-        actual   = d.get("actual")
-        anterior = d.get("anterior")
-        variacion = None
-        if actual is not None and anterior is not None and anterior > 0:
-            variacion = round((actual - anterior) / anterior * 100, 1)
-        resultado.append({
-            "mes":              mes,
-            "actual":           actual,
-            "anterior":         anterior,
-            "variacion_pct":    variacion,
-            "anio_actual":      anio_actual,
-            "anio_anterior":    anio_anterior,
-        })
+    # Calcular variaciones
+    for mes, d in datos.items():
+        if d["monto_actual"] is not None and d["monto_anterior"] and d["monto_anterior"] > 0:
+            d["var_monto"] = round((d["monto_actual"] - d["monto_anterior"]) / d["monto_anterior"] * 100, 1)
+        if d["pgn_actual"] is not None and d["pgn_anterior"] and d["pgn_anterior"] > 0:
+            d["var_pgn"] = round((d["pgn_actual"] - d["pgn_anterior"]) / d["pgn_anterior"] * 100, 1)
 
-    return resultado
+    return {
+        "anio_actual":   anio_actual,
+        "anio_anterior": anio_anterior,
+        "meses":         [datos[m] for m in sorted(datos.keys())],
+    }
 
 
 @router.get("/contratos")
