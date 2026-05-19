@@ -178,3 +178,96 @@ def contratos(
         "SELECT codigo_k FROM dim_contrato ORDER BY codigo_k"
     )).fetchall()
     return [r[0] for r in rows]
+
+
+@router.get("/estado-cargas")
+def estado_cargas(
+    _: Usuario = Depends(require_gerente_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Devuelve el estado de carga por contrato y período desde enero 2025.
+    Para cada combinación contrato+período indica si fue cargada o no,
+    quién la cargó y cuándo.
+    """
+    # Todos los contratos
+    contratos_rows = db.execute(text(
+        "SELECT codigo_k FROM dim_contrato ORDER BY codigo_k"
+    )).fetchall()
+    todos_contratos = [r[0] for r in contratos_rows]
+
+    # Cargas realizadas desde enero 2025
+    cargas = db.execute(text("""
+        SELECT
+            cl.contrato,
+            cl.periodo,
+            cl.usuario_nombre,
+            cl.cargado_en,
+            cl.filas_cargadas,
+            cl.estado
+        FROM carga_log cl
+        WHERE cl.periodo >= '2025-01'
+          AND cl.estado != 'error'
+        ORDER BY cl.periodo DESC, cl.contrato
+    """)).fetchall()
+
+    # Indexar cargas por contrato+periodo
+    cargados = {}
+    for r in cargas:
+        d = dict(r._mapping)
+        # Un archivo puede tener múltiples contratos (ej: "K5, K6")
+        for k in [x.strip() for x in (d["contrato"] or "").split(",")]:
+            if not k:
+                continue
+            key = f"{k}__{d['periodo']}"
+            if key not in cargados:
+                cargados[key] = {
+                    "contrato":       k,
+                    "periodo":        d["periodo"],
+                    "usuario":        d["usuario_nombre"],
+                    "cargado_en":     str(d["cargado_en"]).split("T")[0] if d["cargado_en"] else None,
+                    "filas_cargadas": d["filas_cargadas"],
+                    "estado":         d["estado"],
+                }
+
+    # Generar todos los períodos desde enero 2025 hasta el mes actual
+    from datetime import date
+    hoy        = date.today()
+    anio_desde = 2025
+    mes_desde  = 1
+    anio_hasta = hoy.year
+    mes_hasta  = hoy.month
+
+    periodos = []
+    a, m = anio_desde, mes_desde
+    while (a, m) <= (anio_hasta, mes_hasta):
+        periodos.append(f"{a}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            a += 1
+
+    # Construir resultado: para cada contrato × período
+    resultado = []
+    for periodo in reversed(periodos):  # más reciente primero
+        for contrato in todos_contratos:
+            key   = f"{contrato}__{periodo}"
+            carga = cargados.get(key)
+
+            # El período actual solo alertar si es día 10+
+            [anio_p, mes_p] = periodo.split("-")
+            es_periodo_actual = (int(anio_p) == hoy.year and int(mes_p) == hoy.month)
+            if es_periodo_actual and hoy.day < 10:
+                continue
+
+            resultado.append({
+                "contrato":       contrato,
+                "periodo":        periodo,
+                "cargado":        carga is not None,
+                "usuario":        carga["usuario"]        if carga else None,
+                "cargado_en":     carga["cargado_en"]     if carga else None,
+                "filas_cargadas": carga["filas_cargadas"] if carga else None,
+                "estado":         carga["estado"]         if carga else None,
+            })
+
+    return resultado
