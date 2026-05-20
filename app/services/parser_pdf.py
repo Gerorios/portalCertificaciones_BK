@@ -4,6 +4,7 @@ parser_pdf.py
 Lee PDFs de certificaciones de Naturgy.
 Detecta los límites de columna desde el x0 real de cada palabra del header.
 Pega números partidos (problema de pdfplumber con PDFs A3).
+Hereda item_codigo cuando pdfplumber parte una fila en dos líneas.
 """
 import io
 import re
@@ -13,20 +14,19 @@ import pdfplumber
 
 # Palabras del header → nombre canónico del campo
 HEADER_PALABRAS = {
-    "ÍTEMS":        "item_codigo",
-    "ITEMS":        "item_codigo",
-    "TAREA":        "tarea",
-    "K":            "contrato",
-    "UM":           "unidad_medida",
-    "PTOS.":        "ptos_gasnor",
-    "TIPO":         "tipo",
-    "CONTRATISTA":  "contratista",
-    "PROVINCIA":    "provincia",
-    "CANTIDADES":   "cantidades",
-    "CANTIDADES":   "cantidades",
-    "UNITARIO":     "precio_unitario",
-    "TOTAL":        "total_mes",
-    "OBSERVACIONES":"observaciones",
+    "ÍTEMS":         "item_codigo",
+    "ITEMS":         "item_codigo",
+    "TAREA":         "tarea",
+    "K":             "contrato",
+    "UM":            "unidad_medida",
+    "PTOS.":         "ptos_gasnor",
+    "TIPO":          "tipo",
+    "CONTRATISTA":   "contratista",
+    "PROVINCIA":     "provincia",
+    "CANTIDADES":    "cantidades",
+    "UNITARIO":      "precio_unitario",
+    "TOTAL":         "total_mes",
+    "OBSERVACIONES": "observaciones",
 }
 
 PROVINCIAS = {
@@ -80,7 +80,7 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
 
     # Encontrar header → detectar columnas por x0 real
     header_top = None
-    col_map    = None  # dict {campo: (x_inicio, x_fin)}
+    col_map    = None
 
     for top in sorted(lineas.keys()):
         ws = sorted(lineas[top], key=lambda w: w["x0"])
@@ -94,14 +94,31 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
         return
 
     # Procesar filas de datos
-    num_fila = 0
+    num_fila    = 0
+    ultimo_item = None  # para heredar cuando pdfplumber parte una fila en dos
+
     for top in sorted(k for k in lineas.keys() if k > header_top):
         ws = sorted(lineas[top], key=lambda w: w["x0"])
         if not ws:
             continue
+
         primer = ws[0]["text"].strip()
-        if not _es_item_valido(primer):
-            continue
+
+        if _es_item_valido(primer):
+            # Línea normal con código de ítem
+            ultimo_item = primer
+        else:
+            # Sin código — verificar si tiene datos numéricos en la columna de cantidades
+            if "cantidades" not in col_map or not ultimo_item:
+                continue
+            x_min_cant, x_max_cant = col_map["cantidades"]
+            tiene_datos = any(x_min_cant <= w["x0"] < x_max_cant for w in ws)
+            if not tiene_datos:
+                continue
+            # Inyectar el item_codigo de la fila anterior al inicio
+            ws = [{"text": ultimo_item, "x0": col_map["item_codigo"][0] + 1,
+                   "top": top, "width": 20}] + ws
+
         num_fila += 1
         fila, errores = _procesar_fila(
             ws, col_map, nombre_archivo, num_fila, anio, mes, meta
@@ -114,22 +131,18 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
 def _construir_col_map(header_ws: list) -> dict:
     """
     Construye {campo: (x_inicio, x_fin)} usando los x0 reales del header.
-    x_fin de cada campo = x0 del siguiente campo detectado.
     """
-    # Detectar qué palabras del header corresponden a qué campo
-    detectados = []  # lista de (x0, campo)
+    detectados = []
     for w in sorted(header_ws, key=lambda w: w["x0"]):
         texto = w["text"].strip().upper()
         if texto in HEADER_PALABRAS:
             campo = HEADER_PALABRAS[texto]
-            # No duplicar (GASNOR aparece dos veces, NOMBRE/CONTRATO son ruido)
             if not any(c == campo for _, c in detectados):
                 detectados.append((w["x0"], campo))
 
     if not detectados:
         return {}
 
-    # Construir rangos: cada campo va desde su x0 hasta el x0 del siguiente
     col_map = {}
     for i, (x0, campo) in enumerate(detectados):
         x_fin = detectados[i + 1][0] if i + 1 < len(detectados) else 99999
@@ -146,7 +159,7 @@ def _get_texto(ws: list, col_map: dict, campo: str) -> str:
     palabras = [w for w in ws if x_min <= w["x0"] < x_max]
     if not palabras:
         return ""
-    # item_codigo: tomar solo la primera palabra (el código numérico/alfanumérico)
+    # item_codigo: solo la primera palabra
     if campo == "item_codigo":
         return palabras[0]["text"].strip()
     return _pegar_palabras(palabras)
@@ -154,39 +167,41 @@ def _get_texto(ws: list, col_map: dict, campo: str) -> str:
 
 def _pegar_palabras(ws: list) -> str:
     """
-    Junta palabras. Si dos palabras numéricas consecutivas están
-    muy cerca (dígito partido), las pega sin espacio.
+    Junta palabras pegando dígitos partidos por pdfplumber.
+    Ej: '9' + '.338,22' → '9.338,22'  |  '8' + '3.006,40' → '83.006,40'
     """
     if not ws:
         return ""
     resultado = [ws[0]["text"].strip()]
     for i in range(1, len(ws)):
-        prev = ws[i - 1]
-        curr = ws[i]
-        prev_texto = prev["text"].strip()
-        curr_texto = curr["text"].strip()
-        gap = curr["x0"] - (prev["x0"] + prev.get("width", len(prev_texto) * 4))
+        prev      = ws[i - 1]
+        curr      = ws[i]
+        prev_txt  = prev["text"].strip()
+        curr_txt  = curr["text"].strip()
+        gap       = curr["x0"] - (prev["x0"] + prev.get("width", len(prev_txt) * 4))
 
-        # Pegar si son partes de un número (gap muy pequeño)
-        if (gap < 5 and
-                re.match(r'^\d+$', prev_texto) and
-                re.match(r'^\d', curr_texto)):
-            resultado[-1] = resultado[-1] + curr_texto
+        # Pegar si gap muy pequeño y parecen partes de un número
+        es_numero_partido = (
+            gap < 8 and
+            re.match(r'^\d+$', prev_txt) and
+            re.match(r'^[\d\.,]', curr_txt)
+        )
+        if es_numero_partido:
+            resultado[-1] = resultado[-1] + curr_txt
         else:
-            resultado.append(curr_texto)
+            resultado.append(curr_txt)
     return " ".join(resultado).strip()
 
 
 def _limpiar_num(s: str) -> Optional[str]:
     if not s:
         return None
-    # Quitar $ y tomar solo la primera secuencia numérica (con puntos/comas)
-    s = re.sub(r"\$", "", s).strip()
+    # Quitar $ y tomar solo la primera secuencia numérica
+    s = s.replace("$", "").strip()
     m = re.match(r'^[\d\.,]+', s)
     if not m:
         return None
     s = m.group(0).strip(".,")
-    # Formato argentino: puntos de miles + coma decimal → float
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".")
     elif "," in s:
@@ -229,7 +244,7 @@ def _procesar_fila(ws, col_map, nombre_archivo, num_fila, anio, mes, meta):
     total_mes     = num("total_mes")
     observaciones = get("observaciones").strip() or None
 
-    # Normalizar contrato — extraer solo KN
+    # Normalizar contrato
     m = re.match(r'K\d+', contrato_raw)
     contrato = m.group(0) if m else meta.get("k_gasnor", "") or ""
 
