@@ -96,6 +96,7 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
     # Procesar filas de datos
     num_fila    = 0
     ultimo_item = None
+    ultima_provincia = None
     tops_ordenados = sorted(k for k in lineas.keys() if k > header_top)
     item_x_max = col_map.get("item_codigo", (0, 384))[1]
 
@@ -134,7 +135,12 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
 
             ws = [{"text": codigo_a_usar, "x0": col_map["item_codigo"][0] + 1,
                    "top": top, "width": 20}] + ws
-
+             # Si no tiene provincia pero la anterior sí, inyectarla
+            if ultima_provincia and "provincia" in col_map:
+                x_prov = col_map["provincia"][0] + 1
+                if not any(col_map["provincia"][0] <= w["x0"] < col_map["provincia"][1] for w in ws):
+                    ws = ws + [{"text": ultima_provincia, "x0": x_prov,
+                                "top": top, "width": 30}]
         num_fila += 1
         fila, errores = _procesar_fila(
             ws, col_map, nombre_archivo, num_fila, anio, mes, meta
@@ -142,6 +148,8 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
         if fila:
             resultado["filas"].append(fila)
             resultado["errores"].extend(errores)
+            if fila.get("provincia"):
+                ultima_provincia = fila["provincia"]
 
 
 def _construir_col_map(header_ws: list) -> dict:
