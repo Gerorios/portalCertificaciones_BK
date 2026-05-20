@@ -10,7 +10,7 @@ from app.services.auth import get_current_user, check_contrato_access
 from app.services.parser import parsear_bytes
 from app.services.carga import cargar_certificaciones
 from app.services.cache import guardar, recuperar, limpiar
-from app.services.parser_pdf_ia import parsear_pdf_bytes
+from app.services.parser_pdf import parsear_pdf_bytes
 
 router = APIRouter(prefix="/certificaciones", tags=["certificaciones"])
 
