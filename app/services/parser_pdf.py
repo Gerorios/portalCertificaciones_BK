@@ -95,28 +95,44 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
 
     # Procesar filas de datos
     num_fila    = 0
-    ultimo_item = None  # para heredar cuando pdfplumber parte una fila en dos
+    ultimo_item = None
+    tops_ordenados = sorted(k for k in lineas.keys() if k > header_top)
+    item_x_max = col_map.get("item_codigo", (0, 384))[1]
 
-    for top in sorted(k for k in lineas.keys() if k > header_top):
+    for idx, top in enumerate(tops_ordenados):
         ws = sorted(lineas[top], key=lambda w: w["x0"])
         if not ws:
             continue
 
-        primer = ws[0]["text"].strip()
+        primer    = ws[0]["text"].strip()
+        x0_primer = ws[0]["x0"]
+        es_item   = _es_item_valido(primer) and x0_primer < item_x_max
 
-        if _es_item_valido(primer):
-            # Línea normal con código de ítem
+        if es_item:
             ultimo_item = primer
         else:
-            # Sin código — verificar si tiene datos numéricos en la columna de cantidades
-            if "cantidades" not in col_map or not ultimo_item:
+            # Sin código — verificar si tiene datos en columna de cantidades
+            if "cantidades" not in col_map:
                 continue
             x_min_cant, x_max_cant = col_map["cantidades"]
             tiene_datos = any(x_min_cant <= w["x0"] < x_max_cant for w in ws)
             if not tiene_datos:
                 continue
-            # Inyectar el item_codigo de la fila anterior al inicio
-            ws = [{"text": ultimo_item, "x0": col_map["item_codigo"][0] + 1,
+
+            # Determinar el item_codigo: mirar adelante si el siguiente tiene el ítem
+            codigo_a_usar = ultimo_item
+            if idx + 1 < len(tops_ordenados):
+                ws_sig = sorted(lineas[tops_ordenados[idx + 1]], key=lambda w: w["x0"])
+                if ws_sig:
+                    sig_primer = ws_sig[0]["text"].strip()
+                    sig_x0     = ws_sig[0]["x0"]
+                    if _es_item_valido(sig_primer) and sig_x0 < item_x_max:
+                        codigo_a_usar = sig_primer
+
+            if not codigo_a_usar:
+                continue
+
+            ws = [{"text": codigo_a_usar, "x0": col_map["item_codigo"][0] + 1,
                    "top": top, "width": 20}] + ws
 
         num_fila += 1
@@ -298,4 +314,4 @@ def _procesar_fila(ws, col_map, nombre_archivo, num_fila, anio, mes, meta):
 def _es_item_valido(s: str) -> bool:
     if not s or s.upper() in ("ÍTEMS", "ITEMS", "ÍTEM", "ITEM", ""):
         return False
-    return bool(re.match(r'^[A-Za-z]?\d{2,}', s))
+    return bool(re.match(r'^[A-Za-z]?\d{3,}', s))
