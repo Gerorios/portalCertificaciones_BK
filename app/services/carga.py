@@ -1,6 +1,10 @@
 """
 Servicio de carga de certificaciones a la base de datos.
 Resuelve FKs automáticamente: item → id_item, contrato → id_contrato, etc.
+
+El contrato se resuelve desde el maestro de ítems (dim_item), no desde
+la certificación — así se corrigen errores de Naturgy donde asignan K3
+a un ítem que pertenece a K2.
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -29,11 +33,29 @@ def _resolver_id_item(db: Session, item_codigo: str, contrato_k: str) -> int | N
     return row[0] if row else None
 
 
-def _resolver_id_contrato(db: Session, codigo_k: str) -> int | None:
-    row = db.execute(text(
+def _resolver_id_contrato_desde_maestro(db: Session, item_codigo: str, contrato_k: str) -> int | None:
+    """
+    Resuelve el id_contrato usando el contrato asignado al ítem en el maestro.
+    Si el ítem no existe en el maestro, usa el contrato de la certificación como fallback.
+    Esto corrige casos donde Naturgy asigna un K incorrecto en la certificación.
+    """
+    # Primero: contrato que tiene el ítem en dim_item
+    row = db.execute(text("""
+        SELECT di.id_contrato
+        FROM dim_item di
+        WHERE REPLACE(di.item_codigo, '.', ',') = :item
+        LIMIT 1
+    """), {"item": item_codigo.replace(".", ",")}).fetchone()
+
+    if row:
+        return row[0]
+
+    # Fallback: usar el contrato de la certificación
+    row2 = db.execute(text(
         "SELECT id_contrato FROM dim_contrato WHERE codigo_k = :k"
-    ), {"k": codigo_k}).fetchone()
-    return row[0] if row else None
+    ), {"k": contrato_k}).fetchone()
+
+    return row2[0] if row2 else None
 
 
 def _resolver_id_provincia(db: Session, nombre: str) -> int | None:
@@ -51,6 +73,7 @@ def cargar_certificaciones(
 ) -> dict:
     """
     Inserta las filas en fact_certificaciones resolviendo FKs.
+    El contrato se toma del maestro de ítems, no de la certificación.
 
     Retorna: {"insertadas": N, "omitidas": N, "errores": [...]}
     """
@@ -63,8 +86,8 @@ def cargar_certificaciones(
             omitidas += 1
             continue
 
-        id_contrato  = _resolver_id_contrato(db, fila["contrato"])
         id_item      = _resolver_id_item(db, fila["item_codigo"], fila["contrato"])
+        id_contrato  = _resolver_id_contrato_desde_maestro(db, fila["item_codigo"], fila["contrato"])
         id_provincia = _resolver_id_provincia(db, fila["provincia"])
 
         if not id_contrato:
