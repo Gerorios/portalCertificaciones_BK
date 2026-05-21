@@ -11,7 +11,7 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 def require_gerente_or_admin(current: Usuario = Depends(get_current_user)) -> Usuario:
-    if current.rol not in ("admin", "gerente"):
+    if current.rol not in ("admin", "gerente","jefe"):
         raise HTTPException(403, "Se requiere rol gerente o admin")
     return current
 
