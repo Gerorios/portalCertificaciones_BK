@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
+from datetime import date
 
 from app.database import get_db
 from app.models import Usuario
@@ -10,23 +11,45 @@ from app.services.auth import get_current_user
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
+def require_analytics(current: Usuario = Depends(get_current_user)) -> Usuario:
+    """Permite acceso a admin, gerente y jefe."""
+    if current.rol not in ("admin", "gerente", "jefe"):
+        raise HTTPException(403, "Sin acceso a analytics")
+    return current
+
+
 def require_gerente_or_admin(current: Usuario = Depends(get_current_user)) -> Usuario:
-    if current.rol not in ("admin", "gerente","jefe"):
+    if current.rol not in ("admin", "gerente"):
         raise HTTPException(403, "Se requiere rol gerente o admin")
     return current
 
 
-def _filtros(desde, hasta, contrato):
+def _filtros(desde, hasta, contrato, current: Usuario = None):
+    """
+    Construye filtros SQL.
+    Si el usuario es jefe, fuerza el filtro por sus contratos
+    independientemente del parámetro 'contrato'.
+    """
     f, p = "", {}
+
     if desde:
         f += " AND DATE_FORMAT(fc.fecha, '%Y-%m') >= :desde"
         p["desde"] = desde
     if hasta:
         f += " AND DATE_FORMAT(fc.fecha, '%Y-%m') <= :hasta"
         p["hasta"] = hasta
-    if contrato:
+
+    if current and current.rol == "jefe":
+        # Jefe: siempre filtrar por sus contratos
+        ks = current.contratos_list
+        if ks:
+            ks_str = ", ".join(f"'{k}'" for k in ks)
+            f += f" AND dc.codigo_k IN ({ks_str})"
+    elif contrato:
+        # Gerente/admin: filtrar por contrato si se pasa
         f += " AND dc.codigo_k = :contrato"
         p["contrato"] = contrato
+
     return f, p
 
 
@@ -35,10 +58,10 @@ def evolucion_mensual(
     desde:    Optional[str] = None,
     hasta:    Optional[str] = None,
     contrato: Optional[str] = None,
-    _: Usuario = Depends(require_gerente_or_admin),
+    current: Usuario = Depends(require_analytics),
     db: Session = Depends(get_db),
 ):
-    f, p = _filtros(desde, hasta, contrato)
+    f, p = _filtros(desde, hasta, contrato, current)
     rows = db.execute(text(f"""
         SELECT
             DATE_FORMAT(fc.fecha, '%Y-%m')      AS periodo,
@@ -58,10 +81,10 @@ def por_contrato_mes(
     desde:    Optional[str] = None,
     hasta:    Optional[str] = None,
     contrato: Optional[str] = None,
-    _: Usuario = Depends(require_gerente_or_admin),
+    current: Usuario = Depends(require_analytics),
     db: Session = Depends(get_db),
 ):
-    f, p = _filtros(desde, hasta, contrato)
+    f, p = _filtros(desde, hasta, contrato, current)
     rows = db.execute(text(f"""
         SELECT
             DATE_FORMAT(fc.fecha, '%Y-%m')      AS periodo,
@@ -84,10 +107,10 @@ def top_items(
     hasta:    Optional[str] = None,
     contrato: Optional[str] = None,
     limite:   int = 10,
-    _: Usuario = Depends(require_gerente_or_admin),
+    current: Usuario = Depends(require_analytics),
     db: Session = Depends(get_db),
 ):
-    f, p = _filtros(desde, hasta, contrato)
+    f, p = _filtros(desde, hasta, contrato, current)
     p["limite"] = limite
     rows = db.execute(text(f"""
         SELECT
@@ -110,21 +133,28 @@ def top_items(
 @router.get("/interanual")
 def interanual(
     contrato: Optional[str] = None,
-    _: Usuario = Depends(require_gerente_or_admin),
+    current: Usuario = Depends(require_analytics),
     db: Session = Depends(get_db),
 ):
     f, p = "", {}
-    if contrato:
+
+    if current.rol == "jefe":
+        # Jefe: filtrar por sus contratos
+        ks = current.contratos_list
+        if ks:
+            ks_str = ", ".join(f"'{k}'" for k in ks)
+            f = f" AND dc.codigo_k IN ({ks_str})"
+    elif contrato:
         f = " AND dc.codigo_k = :contrato"
         p["contrato"] = contrato
 
     rows = db.execute(text(f"""
         SELECT
-            YEAR(fc.fecha)                          AS anio,
-            MONTH(fc.fecha)                         AS mes,
-            DATE_FORMAT(fc.fecha, '%Y-%m')          AS periodo,
-            SUM(fc.total_mes)                       AS monto_total,
-            SUM(fc.cantidades * di.ptos_gasnor)     AS pgn_total
+            YEAR(fc.fecha)                      AS anio,
+            MONTH(fc.fecha)                     AS mes,
+            DATE_FORMAT(fc.fecha, '%Y-%m')      AS periodo,
+            SUM(fc.total_mes)                   AS monto_total,
+            SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total
         FROM fact_certificaciones fc
         JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
         JOIN dim_item     di ON fc.id_item     = di.id_item
@@ -171,9 +201,12 @@ def interanual(
 
 @router.get("/contratos")
 def contratos(
-    _: Usuario = Depends(require_gerente_or_admin),
+    current: Usuario = Depends(require_analytics),
     db: Session = Depends(get_db),
 ):
+    if current.rol == "jefe":
+        # Jefe solo ve sus contratos
+        return current.contratos_list
     rows = db.execute(text(
         "SELECT codigo_k FROM dim_contrato ORDER BY codigo_k"
     )).fetchall()
@@ -185,37 +218,22 @@ def estado_cargas(
     _: Usuario = Depends(require_gerente_or_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Devuelve el estado de carga por contrato y período desde enero 2025.
-    Para cada combinación contrato+período indica si fue cargada o no,
-    quién la cargó y cuándo.
-    """
-    # Todos los contratos
     contratos_rows = db.execute(text(
         "SELECT codigo_k FROM dim_contrato ORDER BY codigo_k"
     )).fetchall()
     todos_contratos = [r[0] for r in contratos_rows]
 
-    # Cargas realizadas desde enero 2025
     cargas = db.execute(text("""
-        SELECT
-            cl.contrato,
-            cl.periodo,
-            cl.usuario_nombre,
-            cl.cargado_en,
-            cl.filas_cargadas,
-            cl.estado
+        SELECT cl.contrato, cl.periodo, cl.usuario_nombre,
+               cl.cargado_en, cl.filas_cargadas, cl.estado
         FROM carga_log cl
-        WHERE cl.periodo >= '2025-01'
-          AND cl.estado != 'error'
+        WHERE cl.periodo >= '2025-01' AND cl.estado != 'error'
         ORDER BY cl.periodo DESC, cl.contrato
     """)).fetchall()
 
-    # Indexar cargas por contrato+periodo
     cargados = {}
     for r in cargas:
         d = dict(r._mapping)
-        # Un archivo puede tener múltiples contratos (ej: "K5, K6")
         for k in [x.strip() for x in (d["contrato"] or "").split(",")]:
             if not k:
                 continue
@@ -230,36 +248,25 @@ def estado_cargas(
                     "estado":         d["estado"],
                 }
 
-    # Generar todos los períodos desde enero 2025 hasta el mes actual
-    from datetime import date
-    hoy        = date.today()
-    anio_desde = 2025
-    mes_desde  = 1
-    anio_hasta = hoy.year
-    mes_hasta  = hoy.month
-
+    hoy = date.today()
     periodos = []
-    a, m = anio_desde, mes_desde
-    while (a, m) <= (anio_hasta, mes_hasta):
+    a, m = 2025, 1
+    while (a, m) <= (hoy.year, hoy.month):
         periodos.append(f"{a}-{m:02d}")
         m += 1
         if m > 12:
             m = 1
             a += 1
 
-    # Construir resultado: para cada contrato × período
     resultado = []
-    for periodo in reversed(periodos):  # más reciente primero
+    for periodo in reversed(periodos):
         for contrato in todos_contratos:
             key   = f"{contrato}__{periodo}"
             carga = cargados.get(key)
-
-            # El período actual solo alertar si es día 10+
             [anio_p, mes_p] = periodo.split("-")
-            es_periodo_actual = (int(anio_p) == hoy.year and int(mes_p) == hoy.month)
-            if es_periodo_actual and hoy.day < 10:
+            es_actual = (int(anio_p) == hoy.year and int(mes_p) == hoy.month)
+            if es_actual and hoy.day < 10:
                 continue
-
             resultado.append({
                 "contrato":       contrato,
                 "periodo":        periodo,
@@ -269,7 +276,6 @@ def estado_cargas(
                 "filas_cargadas": carga["filas_cargadas"] if carga else None,
                 "estado":         carga["estado"]         if carga else None,
             })
-
     return resultado
 
 
@@ -278,10 +284,6 @@ def kpis_jefe(
     current: Usuario = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    KPIs del mes actual vs mismo mes año anterior para el jefe de contrato.
-    Filtrado automáticamente por los contratos asignados al usuario.
-    """
     if current.rol not in ("admin", "jefe"):
         raise HTTPException(403, "Solo para jefes de contrato")
 
@@ -292,7 +294,6 @@ def kpis_jefe(
     ks = ", ".join(f"'{k}'" for k in contratos)
     filtro_k = f"AND dc.codigo_k IN ({ks})"
 
-    # Mes actual y mes del año anterior
     datos = db.execute(text(f"""
         SELECT
             YEAR(fc.fecha)                      AS anio,
@@ -313,11 +314,12 @@ def kpis_jefe(
         ORDER BY anio DESC
     """)).fetchall()
 
+    hoy      = date.today()
     actual   = None
     anterior = None
     for r in datos:
         d = dict(r._mapping)
-        if d["anio"] == __import__("datetime").date.today().year:
+        if d["anio"] == hoy.year:
             actual = d
         else:
             anterior = d
@@ -328,18 +330,18 @@ def kpis_jefe(
         return None
 
     return {
-        "monto_actual":    float(actual["monto_total"])  if actual   else None,
-        "monto_anterior":  float(anterior["monto_total"]) if anterior else None,
-        "pgn_actual":      float(actual["pgn_total"])    if actual   else None,
-        "pgn_anterior":    float(anterior["pgn_total"])  if anterior else None,
-        "lineas_actual":   int(actual["lineas"])         if actual   else 0,
-        "var_monto":       variacion(
-            actual["monto_total"]  if actual   else None,
-            anterior["monto_total"] if anterior else None
+        "monto_actual":   float(actual["monto_total"])   if actual   else None,
+        "monto_anterior": float(anterior["monto_total"]) if anterior else None,
+        "pgn_actual":     float(actual["pgn_total"])     if actual   else None,
+        "pgn_anterior":   float(anterior["pgn_total"])   if anterior else None,
+        "lineas_actual":  int(actual["lineas"])          if actual   else 0,
+        "var_monto":      variacion(
+            actual["monto_total"]   if actual   else None,
+            anterior["monto_total"] if anterior else None,
         ),
-        "var_pgn":         variacion(
-            actual["pgn_total"]    if actual   else None,
-            anterior["pgn_total"]  if anterior else None
+        "var_pgn":        variacion(
+            actual["pgn_total"]     if actual   else None,
+            anterior["pgn_total"]   if anterior else None,
         ),
-        "contratos":       contratos,
+        "contratos": contratos,
     }
