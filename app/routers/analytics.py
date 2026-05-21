@@ -271,3 +271,75 @@ def estado_cargas(
             })
 
     return resultado
+
+
+@router.get("/kpis-jefe")
+def kpis_jefe(
+    current: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    KPIs del mes actual vs mismo mes año anterior para el jefe de contrato.
+    Filtrado automáticamente por los contratos asignados al usuario.
+    """
+    if current.rol not in ("admin", "jefe"):
+        raise HTTPException(403, "Solo para jefes de contrato")
+
+    contratos = current.contratos_list
+    if not contratos:
+        return {}
+
+    ks = ", ".join(f"'{k}'" for k in contratos)
+    filtro_k = f"AND dc.codigo_k IN ({ks})"
+
+    # Mes actual y mes del año anterior
+    datos = db.execute(text(f"""
+        SELECT
+            YEAR(fc.fecha)                      AS anio,
+            MONTH(fc.fecha)                     AS mes,
+            SUM(fc.total_mes)                   AS monto_total,
+            SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total,
+            COUNT(*)                            AS lineas
+        FROM fact_certificaciones fc
+        JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
+        JOIN dim_item     di ON fc.id_item     = di.id_item
+        WHERE (
+            DATE_FORMAT(fc.fecha, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+            OR DATE_FORMAT(fc.fecha, '%Y-%m') = DATE_FORMAT(
+                DATE_SUB(CURDATE(), INTERVAL 1 YEAR), '%Y-%m')
+        )
+        {filtro_k}
+        GROUP BY anio, mes
+        ORDER BY anio DESC
+    """)).fetchall()
+
+    actual   = None
+    anterior = None
+    for r in datos:
+        d = dict(r._mapping)
+        if d["anio"] == __import__("datetime").date.today().year:
+            actual = d
+        else:
+            anterior = d
+
+    def variacion(a, b):
+        if a is not None and b and float(b) > 0:
+            return round((float(a) - float(b)) / float(b) * 100, 1)
+        return None
+
+    return {
+        "monto_actual":    float(actual["monto_total"])  if actual   else None,
+        "monto_anterior":  float(anterior["monto_total"]) if anterior else None,
+        "pgn_actual":      float(actual["pgn_total"])    if actual   else None,
+        "pgn_anterior":    float(anterior["pgn_total"])  if anterior else None,
+        "lineas_actual":   int(actual["lineas"])         if actual   else 0,
+        "var_monto":       variacion(
+            actual["monto_total"]  if actual   else None,
+            anterior["monto_total"] if anterior else None
+        ),
+        "var_pgn":         variacion(
+            actual["pgn_total"]    if actual   else None,
+            anterior["pgn_total"]  if anterior else None
+        ),
+        "contratos":       contratos,
+    }
