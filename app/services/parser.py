@@ -11,27 +11,31 @@ import pandas as pd
 COL_ALIAS = {
     "item_codigo":     ["ÍTEMS", "ITEMS", "ÍTEM", "ITEM"],
     "nombre_contrato": ["NOMBRE CONTRATO", "NOMBRE_CONTRATO"],
-    "tarea":           ["TAREA"],
-    "contrato":        ["K GASNOR", "K_GASNOR", "K GASNOR "],
+    "tarea":           ["TAREA", "DESCRIPCION", "DESCRIPCIÓN"],
+    "contrato":        ["K GASNOR", "K_GASNOR", "K GASNOR ", "K"],
     "unidad_medida":   ["UM", "UNIDAD", "UNIDAD MEDIDA"],
-    "ptos_gasnor":     ["PTOS. GASNOR", "PTOS GASNOR", "PUNTOS GASNOR"],
+    "ptos_gasnor":     ["PTOS. GASNOR", "PTOS GASNOR", "PUNTOS GASNOR", "PUNTOS", "PTOS"],
     "tipo":            ["TIPO"],
     "contratista":     ["CONTRATISTA"],
     "provincia":       ["PROVINCIA"],
     "cantidades":      ["CANTIDADES", "CANTIDAD"],
-    "precio_unitario": ["$ UNITARIO MES", "UNITARIO MES", "$ UNITARIO", "PRECIO UNITARIO"],
-    "total_mes":       ["$ TOTAL MES", "TOTAL MES", "$ TOTAL", "TOTAL"],
+    "precio_unitario": ["$ UNITARIO MES", "UNITARIO MES", "$ UNITARIO", "PRECIO UNITARIO", "$ UNIT"],
+    "total_mes":       ["$ TOTAL MES", "TOTAL MES", "$ TOTAL", "TOTAL CERTIFICADO", "TOTAL"],
     "observaciones":   ["OBSERVACIONES", "OBS", "OBSERVACION"],
 }
 
 
 def _mapear_columnas(header_upper: list[str]) -> dict[str, str]:
     """Dado el header en UPPER, devuelve {nombre_canonico: nombre_en_header}."""
+    # Normalizar: reemplazar saltos de línea y espacios múltiples
+    header_norm = [re.sub(r"\s+", " ", h).strip() for h in header_upper]
     mapa = {}
     for canon, aliases in COL_ALIAS.items():
         for alias in aliases:
-            if alias in header_upper:
-                mapa[canon] = alias
+            alias_norm = re.sub(r"\s+", " ", alias).strip()
+            if alias_norm in header_norm:
+                idx = header_norm.index(alias_norm)
+                mapa[canon] = header_upper[idx]  # usar nombre original
                 break
     return mapa
 
@@ -140,10 +144,10 @@ def _procesar_hoja(xl, nombre_hoja, nombre_archivo, anio, mes, resultado, conten
 
 
 def _encontrar_header_idx(df: pd.DataFrame):
-    """Busca la fila que contiene ÍTEMS o ITEMS en cualquier columna."""
+    """Busca la fila que contiene ÍTEMS, ITEMS o ITEM en cualquier columna."""
     for i, row in df.iterrows():
         for val in row:
-            if isinstance(val, str) and val.strip().upper() in ("ÍTEMS", "ITEMS"):
+            if isinstance(val, str) and val.strip().upper() in ("ÍTEMS", "ITEMS", "ÍTEM", "ITEM"):
                 return i
     return None
 
@@ -226,10 +230,7 @@ def _procesar_fila(row, col_map: dict, hoja, num_fila, archivo, meta):
         contrato = "K" + contrato.lstrip("kK")
 
     tiene_error = False
-    if not provincia:
-        errores.append({"hoja": hoja, "fila": num_fila, "campo": "provincia",
-                        "mensaje": "Provincia vacía."})
-        tiene_error = True
+    # Provincia vacía NO es error bloqueante — el usuario la selecciona en el preview
     if not contrato:
         errores.append({"hoja": hoja, "fila": num_fila, "campo": "contrato",
                         "mensaje": "Contrato K no detectado."})
