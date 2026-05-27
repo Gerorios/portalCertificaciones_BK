@@ -33,7 +33,7 @@ def _filtros(
 ):
     """
     Construye filtros SQL dinámicos.
-    El jefe siempre queda restringido a sus fff propios contratos.
+    El jefe siempre queda restringido a sus propios contratos.
     """
     f, p = "", {}
 
@@ -44,9 +44,14 @@ def _filtros(
         f += " AND DATE_FORMAT(fc.fecha, '%Y-%m') <= :hasta"
         p["hasta"] = hasta
 
-    # Contratos: jefe siempre filtrado por los suyos
+    # Contratos: jefe restringido a los suyos, pero puede filtrar dentro de ellos
     if current.rol == "jefe":
-        ks = current.contratos_list
+        ks_propios = current.contratos_list or []
+        # Si el jefe seleccionó contratos específicos, usar la intersección
+        if contratos:
+            ks = [k for k in contratos if k in ks_propios]
+        else:
+            ks = ks_propios
         if ks:
             ks_str = ", ".join(f"'{k}'" for k in ks)
             f += f" AND dc.codigo_k IN ({ks_str})"
