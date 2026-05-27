@@ -33,7 +33,7 @@ def _filtros(
 ):
     """
     Construye filtros SQL dinámicos.
-    El jefe siempre queda restringido a sus propios contratos.
+    El jefe siempre queda restringido a sus fff propios contratos.
     """
     f, p = "", {}
 
