@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from typing import Optional
+from typing import Optional, List
 from datetime import date
 
 from app.database import get_db
@@ -12,7 +12,6 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 def require_analytics(current: Usuario = Depends(get_current_user)) -> Usuario:
-    """Permite acceso a admin, gerente y jefe."""
     if current.rol not in ("admin", "gerente", "jefe"):
         raise HTTPException(403, "Sin acceso a analytics")
     return current
@@ -24,11 +23,17 @@ def require_gerente_or_admin(current: Usuario = Depends(get_current_user)) -> Us
     return current
 
 
-def _filtros(desde, hasta, contrato, current: Usuario = None):
+def _filtros(
+    desde:      Optional[str],
+    hasta:      Optional[str],
+    contratos:  List[str],
+    provincias: List[str],
+    tipo:       Optional[str],
+    current:    Usuario,
+):
     """
-    Construye filtros SQL.
-    Si el usuario es jefe, fuerza el filtro por sus contratos
-    independientemente del parámetro 'contrato'.
+    Construye filtros SQL dinámicos.
+    El jefe siempre queda restringido a sus propios contratos.
     """
     f, p = "", {}
 
@@ -39,37 +44,49 @@ def _filtros(desde, hasta, contrato, current: Usuario = None):
         f += " AND DATE_FORMAT(fc.fecha, '%Y-%m') <= :hasta"
         p["hasta"] = hasta
 
-    if current and current.rol == "jefe":
-        # Jefe: siempre filtrar por sus contratos
+    # Contratos: jefe siempre filtrado por los suyos
+    if current.rol == "jefe":
         ks = current.contratos_list
         if ks:
             ks_str = ", ".join(f"'{k}'" for k in ks)
             f += f" AND dc.codigo_k IN ({ks_str})"
-    elif contrato:
-        # Gerente/admin: filtrar por contrato si se pasa
-        f += " AND dc.codigo_k = :contrato"
-        p["contrato"] = contrato
+    elif contratos:
+        ks_str = ", ".join(f"'{k}'" for k in contratos)
+        f += f" AND dc.codigo_k IN ({ks_str})"
+
+    # Provincias
+    if provincias:
+        pv_str = ", ".join(f"'{pv}'" for pv in provincias)
+        f += f" AND pv.provincia IN ({pv_str})"
+
+    # OPEX / CAPEX
+    if tipo and tipo in ("OPEX", "CAPEX"):
+        f += " AND fc.tipo = :tipo"
+        p["tipo"] = tipo
 
     return f, p
 
 
 @router.get("/evolucion-mensual")
 def evolucion_mensual(
-    desde:    Optional[str] = None,
-    hasta:    Optional[str] = None,
-    contrato: Optional[str] = None,
-    current: Usuario = Depends(require_analytics),
-    db: Session = Depends(get_db),
+    desde:      Optional[str]       = None,
+    hasta:      Optional[str]       = None,
+    contratos:  List[str]           = Query(default=[]),
+    provincias: List[str]           = Query(default=[]),
+    tipo:       Optional[str]       = None,
+    current:    Usuario             = Depends(require_analytics),
+    db:         Session             = Depends(get_db),
 ):
-    f, p = _filtros(desde, hasta, contrato, current)
+    f, p = _filtros(desde, hasta, contratos, provincias, tipo, current)
     rows = db.execute(text(f"""
         SELECT
             DATE_FORMAT(fc.fecha, '%Y-%m')      AS periodo,
             SUM(fc.total_mes)                   AS monto_total,
             SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total
         FROM fact_certificaciones fc
-        JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
-        JOIN dim_item     di ON fc.id_item     = di.id_item
+        JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
+        JOIN dim_item      di ON fc.id_item      = di.id_item
+        JOIN ma_provincias pv ON fc.id_provincia = pv.id
         WHERE 1=1 {f}
         GROUP BY periodo ORDER BY periodo ASC
     """), p).fetchall()
@@ -78,13 +95,15 @@ def evolucion_mensual(
 
 @router.get("/por-contrato-mes")
 def por_contrato_mes(
-    desde:    Optional[str] = None,
-    hasta:    Optional[str] = None,
-    contrato: Optional[str] = None,
-    current: Usuario = Depends(require_analytics),
-    db: Session = Depends(get_db),
+    desde:      Optional[str]       = None,
+    hasta:      Optional[str]       = None,
+    contratos:  List[str]           = Query(default=[]),
+    provincias: List[str]           = Query(default=[]),
+    tipo:       Optional[str]       = None,
+    current:    Usuario             = Depends(require_analytics),
+    db:         Session             = Depends(get_db),
 ):
-    f, p = _filtros(desde, hasta, contrato, current)
+    f, p = _filtros(desde, hasta, contratos, provincias, tipo, current)
     rows = db.execute(text(f"""
         SELECT
             DATE_FORMAT(fc.fecha, '%Y-%m')      AS periodo,
@@ -92,8 +111,9 @@ def por_contrato_mes(
             SUM(fc.total_mes)                   AS monto_total,
             SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total
         FROM fact_certificaciones fc
-        JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
-        JOIN dim_item     di ON fc.id_item     = di.id_item
+        JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
+        JOIN dim_item      di ON fc.id_item      = di.id_item
+        JOIN ma_provincias pv ON fc.id_provincia = pv.id
         WHERE 1=1 {f}
         GROUP BY periodo, dc.codigo_k
         ORDER BY periodo ASC, dc.codigo_k
@@ -103,14 +123,16 @@ def por_contrato_mes(
 
 @router.get("/top-items")
 def top_items(
-    desde:    Optional[str] = None,
-    hasta:    Optional[str] = None,
-    contrato: Optional[str] = None,
-    limite:   int = 10,
-    current: Usuario = Depends(require_analytics),
-    db: Session = Depends(get_db),
+    desde:      Optional[str]       = None,
+    hasta:      Optional[str]       = None,
+    contratos:  List[str]           = Query(default=[]),
+    provincias: List[str]           = Query(default=[]),
+    tipo:       Optional[str]       = None,
+    limite:     int                 = 10,
+    current:    Usuario             = Depends(require_analytics),
+    db:         Session             = Depends(get_db),
 ):
-    f, p = _filtros(desde, hasta, contrato, current)
+    f, p = _filtros(desde, hasta, contratos, provincias, tipo, current)
     p["limite"] = limite
     rows = db.execute(text(f"""
         SELECT
@@ -120,8 +142,9 @@ def top_items(
             SUM(fc.total_mes)                   AS monto_total,
             SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total
         FROM fact_certificaciones fc
-        JOIN dim_item     di ON fc.id_item     = di.id_item
-        JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
+        JOIN dim_item      di ON fc.id_item      = di.id_item
+        JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
+        JOIN ma_provincias pv ON fc.id_provincia = pv.id
         WHERE 1=1 {f}
         GROUP BY di.item_codigo, fc.tarea, dc.codigo_k
         ORDER BY monto_total DESC
@@ -130,23 +153,44 @@ def top_items(
     return [dict(r._mapping) for r in rows]
 
 
+@router.get("/por-provincia")
+def por_provincia(
+    desde:      Optional[str]       = None,
+    hasta:      Optional[str]       = None,
+    contratos:  List[str]           = Query(default=[]),
+    provincias: List[str]           = Query(default=[]),
+    tipo:       Optional[str]       = None,
+    current:    Usuario             = Depends(require_analytics),
+    db:         Session             = Depends(get_db),
+):
+    """Facturación y PGN por provincia — para el KPI y gráfico de barras."""
+    f, p = _filtros(desde, hasta, contratos, provincias, tipo, current)
+    rows = db.execute(text(f"""
+        SELECT
+            pv.provincia,
+            SUM(fc.total_mes)                   AS monto_total,
+            SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total,
+            COUNT(*)                            AS lineas
+        FROM fact_certificaciones fc
+        JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
+        JOIN dim_item      di ON fc.id_item      = di.id_item
+        JOIN ma_provincias pv ON fc.id_provincia = pv.id
+        WHERE 1=1 {f}
+        GROUP BY pv.provincia
+        ORDER BY monto_total DESC
+    """), p).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
 @router.get("/interanual")
 def interanual(
-    contrato: Optional[str] = None,
-    current: Usuario = Depends(require_analytics),
-    db: Session = Depends(get_db),
+    contratos:  List[str]           = Query(default=[]),
+    provincias: List[str]           = Query(default=[]),
+    tipo:       Optional[str]       = None,
+    current:    Usuario             = Depends(require_analytics),
+    db:         Session             = Depends(get_db),
 ):
-    f, p = "", {}
-
-    if current.rol == "jefe":
-        # Jefe: filtrar por sus contratos
-        ks = current.contratos_list
-        if ks:
-            ks_str = ", ".join(f"'{k}'" for k in ks)
-            f = f" AND dc.codigo_k IN ({ks_str})"
-    elif contrato:
-        f = " AND dc.codigo_k = :contrato"
-        p["contrato"] = contrato
+    f, p = _filtros(None, None, contratos, provincias, tipo, current)
 
     rows = db.execute(text(f"""
         SELECT
@@ -156,15 +200,16 @@ def interanual(
             SUM(fc.total_mes)                   AS monto_total,
             SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total
         FROM fact_certificaciones fc
-        JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
-        JOIN dim_item     di ON fc.id_item     = di.id_item
+        JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
+        JOIN dim_item      di ON fc.id_item      = di.id_item
+        JOIN ma_provincias pv ON fc.id_provincia = pv.id
         WHERE YEAR(fc.fecha) IN (YEAR(CURDATE()), YEAR(CURDATE()) - 1)
           {f}
         GROUP BY anio, mes, periodo
         ORDER BY mes ASC, anio ASC
     """), p).fetchall()
 
-    anios = sorted(set(dict(r._mapping)["anio"] for r in rows), reverse=True)
+    anios         = sorted(set(dict(r._mapping)["anio"] for r in rows), reverse=True)
     anio_actual   = anios[0] if len(anios) > 0 else None
     anio_anterior = anios[1] if len(anios) > 1 else None
 
@@ -205,10 +250,20 @@ def contratos(
     db: Session = Depends(get_db),
 ):
     if current.rol == "jefe":
-        # Jefe solo ve sus contratos
         return current.contratos_list
     rows = db.execute(text(
         "SELECT codigo_k FROM dim_contrato ORDER BY codigo_k"
+    )).fetchall()
+    return [r[0] for r in rows]
+
+
+@router.get("/provincias")
+def provincias_analytics(
+    current: Usuario = Depends(require_analytics),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(text(
+        "SELECT provincia FROM ma_provincias WHERE activo = 1 ORDER BY provincia"
     )).fetchall()
     return [r[0] for r in rows]
 
@@ -291,7 +346,7 @@ def kpis_jefe(
     if not contratos:
         return {}
 
-    ks = ", ".join(f"'{k}'" for k in contratos)
+    ks       = ", ".join(f"'{k}'" for k in contratos)
     filtro_k = f"AND dc.codigo_k IN ({ks})"
 
     datos = db.execute(text(f"""
@@ -302,8 +357,9 @@ def kpis_jefe(
             SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total,
             COUNT(*)                            AS lineas
         FROM fact_certificaciones fc
-        JOIN dim_contrato dc ON fc.id_contrato = dc.id_contrato
-        JOIN dim_item     di ON fc.id_item     = di.id_item
+        JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
+        JOIN dim_item      di ON fc.id_item      = di.id_item
+        JOIN ma_provincias pv ON fc.id_provincia = pv.id
         WHERE (
             DATE_FORMAT(fc.fecha, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
             OR DATE_FORMAT(fc.fecha, '%Y-%m') = DATE_FORMAT(
