@@ -1,17 +1,17 @@
 """
 Servicio de carga de certificaciones a la base de datos.
-Resuelve FKs automáticamente: item → id_item, contrato → id_contrato, etc.
 
-El contrato se resuelve desde el maestro de ítems (dim_item), no desde
-la certificación — así se corrigen errores de Naturgy donde asignan K3
-a un ítem que pertenece a K2.
+Lógica de resolución de contrato:
+- Si el usuario editó el contrato en el preview → usar ese (máxima prioridad)
+- Si no → usar el contrato del maestro de ítems (dim_item)
+- Fallback → contrato del archivo solo si el ítem no existe en el maestro
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 
 def _resolver_id_item(db: Session, item_codigo: str, contrato_k: str) -> int | None:
-    # Busca primero en el contrato correspondiente, si no lo encuentra busca en cualquier contrato
+    """Busca el id_item primero por código+contrato, luego solo por código."""
     row = db.execute(text("""
         SELECT di.id_item FROM dim_item di
         JOIN dim_contrato dc ON di.id_contrato = dc.id_contrato
@@ -23,7 +23,7 @@ def _resolver_id_item(db: Session, item_codigo: str, contrato_k: str) -> int | N
     if row:
         return row[0]
 
-    # Fallback: buscar solo por código sin importar el contrato
+    # Fallback: cualquier contrato
     row = db.execute(text("""
         SELECT id_item FROM dim_item
         WHERE REPLACE(item_codigo, '.', ',') = :item
@@ -33,38 +33,42 @@ def _resolver_id_item(db: Session, item_codigo: str, contrato_k: str) -> int | N
     return row[0] if row else None
 
 
-def _resolver_id_contrato_desde_maestro(db: Session, item_codigo: str, contrato_k: str, contrato_editado: str = None) -> int | None:
-    """
-    Resuelve el id_contrato en este orden de prioridad:
-    1. Contrato editado por el usuario en el preview (máxima prioridad)
-    2. Contrato asignado al ítem en el maestro (dim_item)
-    3. Contrato de la certificación como fallback
-    """
-    # 1. Si el usuario editó el contrato en el preview, usarlo directamente
-    if contrato_editado and contrato_editado.strip():
-        row = db.execute(text(
-            "SELECT id_contrato FROM dim_contrato WHERE codigo_k = :k"
-        ), {"k": contrato_editado.strip()}).fetchone()
-        if row:
-            return row[0]
+def _id_contrato_por_k(db: Session, codigo_k: str) -> int | None:
+    """Devuelve el id_contrato para un código K."""
+    row = db.execute(text(
+        "SELECT id_contrato FROM dim_contrato WHERE codigo_k = :k"
+    ), {"k": codigo_k}).fetchone()
+    return row[0] if row else None
 
-    # 2. Contrato que tiene el ítem en dim_item
+
+def _id_contrato_desde_maestro(db: Session, item_codigo: str) -> int | None:
+    """Devuelve el id_contrato asignado al ítem en dim_item."""
     row = db.execute(text("""
-        SELECT di.id_contrato
-        FROM dim_item di
+        SELECT di.id_contrato FROM dim_item di
         WHERE REPLACE(di.item_codigo, '.', ',') = :item
         LIMIT 1
     """), {"item": item_codigo.replace(".", ",")}).fetchone()
+    return row[0] if row else None
 
-    if row:
-        return row[0]
 
-    # 3. Fallback: contrato de la certificación
-    row2 = db.execute(text(
-        "SELECT id_contrato FROM dim_contrato WHERE codigo_k = :k"
-    ), {"k": contrato_k}).fetchone()
+def _resolver_id_contrato(db: Session, item_codigo: str, contrato_k: str, usuario_edito: bool) -> int | None:
+    """
+    Resuelve id_contrato según prioridad:
+    1. Si el usuario editó el contrato en el preview → usar ese K directamente
+    2. Si no → usar el contrato del maestro de ítems
+    3. Fallback → contrato del archivo si el ítem no existe en el maestro
+    """
+    if usuario_edito:
+        # El usuario eligió explícitamente este contrato — respetarlo siempre
+        return _id_contrato_por_k(db, contrato_k)
 
-    return row2[0] if row2 else None
+    # Sin edición: usar el contrato del maestro
+    id_desde_maestro = _id_contrato_desde_maestro(db, item_codigo)
+    if id_desde_maestro:
+        return id_desde_maestro
+
+    # Fallback: contrato del archivo
+    return _id_contrato_por_k(db, contrato_k)
 
 
 def _resolver_id_provincia(db: Session, nombre: str) -> int | None:
@@ -80,12 +84,6 @@ def cargar_certificaciones(
     usuario_id: int,
     usuario_nombre: str,
 ) -> dict:
-    """
-    Inserta las filas en fact_certificaciones resolviendo FKs.
-    El contrato se toma del maestro de ítems, no de la certificación.
-
-    Retorna: {"insertadas": N, "omitidas": N, "errores": [...]}
-    """
     insertadas = 0
     omitidas   = 0
     errores    = []
@@ -95,19 +93,21 @@ def cargar_certificaciones(
             omitidas += 1
             continue
 
-        id_item      = _resolver_id_item(db, fila["item_codigo"], fila["contrato"])
-        # contrato_editado: viene del preview si el usuario lo cambió manualmente
-        contrato_editado = fila.get("contrato_editado") or fila.get("contrato")
-        id_contrato  = _resolver_id_contrato_desde_maestro(db, fila["item_codigo"], fila["contrato"], contrato_editado)
+        # ¿El usuario editó el contrato manualmente en el preview?
+        usuario_edito = "contrato_editado" in fila and bool(fila["contrato_editado"])
+        contrato_k    = fila["contrato_editado"] if usuario_edito else fila["contrato"]
+
+        id_item      = _resolver_id_item(db, fila["item_codigo"], contrato_k)
+        id_contrato  = _resolver_id_contrato(db, fila["item_codigo"], contrato_k, usuario_edito)
         id_provincia = _resolver_id_provincia(db, fila["provincia"])
 
         if not id_contrato:
-            errores.append({"fila": i, "mensaje": f"Contrato {fila['contrato']} no encontrado"})
+            errores.append({"fila": i, "mensaje": f"Contrato {contrato_k} no encontrado"})
             omitidas += 1
             continue
 
         if not id_item:
-            errores.append({"fila": i, "mensaje": f"Ítem {fila['item_codigo']} para {fila['contrato']} no encontrado"})
+            errores.append({"fila": i, "mensaje": f"Ítem {fila['item_codigo']} no encontrado"})
             omitidas += 1
             continue
 
