@@ -33,13 +33,22 @@ def _resolver_id_item(db: Session, item_codigo: str, contrato_k: str) -> int | N
     return row[0] if row else None
 
 
-def _resolver_id_contrato_desde_maestro(db: Session, item_codigo: str, contrato_k: str) -> int | None:
+def _resolver_id_contrato_desde_maestro(db: Session, item_codigo: str, contrato_k: str, contrato_editado: str = None) -> int | None:
     """
-    Resuelve el id_contrato usando el contrato asignado al ítem en el maestro.
-    Si el ítem no existe en el maestro, usa el contrato de la certificación como fallback.
-    Esto corrige casos donde Naturgy asigna un K incorrecto en la certificación.
+    Resuelve el id_contrato en este orden de prioridad:
+    1. Contrato editado por el usuario en el preview (máxima prioridad)
+    2. Contrato asignado al ítem en el maestro (dim_item)
+    3. Contrato de la certificación como fallback
     """
-    # Primero: contrato que tiene el ítem en dim_item
+    # 1. Si el usuario editó el contrato en el preview, usarlo directamente
+    if contrato_editado and contrato_editado.strip():
+        row = db.execute(text(
+            "SELECT id_contrato FROM dim_contrato WHERE codigo_k = :k"
+        ), {"k": contrato_editado.strip()}).fetchone()
+        if row:
+            return row[0]
+
+    # 2. Contrato que tiene el ítem en dim_item
     row = db.execute(text("""
         SELECT di.id_contrato
         FROM dim_item di
@@ -50,7 +59,7 @@ def _resolver_id_contrato_desde_maestro(db: Session, item_codigo: str, contrato_
     if row:
         return row[0]
 
-    # Fallback: usar el contrato de la certificación
+    # 3. Fallback: contrato de la certificación
     row2 = db.execute(text(
         "SELECT id_contrato FROM dim_contrato WHERE codigo_k = :k"
     ), {"k": contrato_k}).fetchone()
@@ -87,7 +96,9 @@ def cargar_certificaciones(
             continue
 
         id_item      = _resolver_id_item(db, fila["item_codigo"], fila["contrato"])
-        id_contrato  = _resolver_id_contrato_desde_maestro(db, fila["item_codigo"], fila["contrato"])
+        # contrato_editado: viene del preview si el usuario lo cambió manualmente
+        contrato_editado = fila.get("contrato_editado") or fila.get("contrato")
+        id_contrato  = _resolver_id_contrato_desde_maestro(db, fila["item_codigo"], fila["contrato"], contrato_editado)
         id_provincia = _resolver_id_provincia(db, fila["provincia"])
 
         if not id_contrato:
