@@ -359,7 +359,7 @@ def kpis_jefe(
             YEAR(fc.fecha)                      AS anio,
             MONTH(fc.fecha)                     AS mes,
             SUM(fc.total_mes)                   AS monto_total,
-            SUM(fc.cantidades * di.ptos_gasnor) AS pgn_total,
+            SUM(fc.cantidades * fc.ptos_gasnor) AS pgn_total,
             COUNT(*)                            AS lineas
         FROM fact_certificaciones fc
         JOIN dim_contrato  dc ON fc.id_contrato  = dc.id_contrato
