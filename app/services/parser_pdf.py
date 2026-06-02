@@ -16,6 +16,7 @@ import pdfplumber
 HEADER_PALABRAS = {
     "ÍTEMS":         "item_codigo",
     "ITEMS":         "item_codigo",
+    "NOMBRE":        "nombre_contrato",
     "TAREA":         "tarea",
     "K":             "contrato",
     "UM":            "unidad_medida",
@@ -94,11 +95,11 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
         return
 
     # Procesar filas de datos
-    num_fila    = 0
-    ultimo_item = None
-    ultima_provincia = None
-    tops_ordenados = sorted(k for k in lineas.keys() if k > header_top)
-    item_x_max = col_map.get("item_codigo", (0, 384))[1]
+    num_fila        = 0
+    ultimo_item     = None
+    ultima_fila_ctx = {}
+    tops_ordenados  = sorted(k for k in lineas.keys() if k > header_top)
+    item_x_max      = col_map.get("item_codigo", (0, 384))[1]
 
     for idx, top in enumerate(tops_ordenados):
         ws = sorted(lineas[top], key=lambda w: w["x0"])
@@ -135,12 +136,17 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
 
             ws = [{"text": codigo_a_usar, "x0": col_map["item_codigo"][0] + 1,
                    "top": top, "width": 20}] + ws
-             # Si no tiene provincia pero la anterior sí, inyectarla
-            if ultima_provincia and "provincia" in col_map:
-                x_prov = col_map["provincia"][0] + 1
-                if not any(col_map["provincia"][0] <= w["x0"] < col_map["provincia"][1] for w in ws):
-                    ws = ws + [{"text": ultima_provincia, "x0": x_prov,
-                                "top": top, "width": 30}]
+
+            # Inyectar contexto de fila anterior (tarea, tipo, contratista)
+            for campo in ["nombre_contrato", "tarea", "tipo", "contratista"]:
+                if ultima_fila_ctx.get(campo) and campo in col_map:
+                    x_min_c, x_max_c = col_map[campo]
+                    ya_tiene = any(x_min_c <= w["x0"] < x_max_c for w in ws)
+                    if not ya_tiene:
+                        txt = ultima_fila_ctx[campo]
+                        ws = ws + [{"text": txt, "x0": col_map[campo][0] + 1,
+                                    "top": top, "width": len(txt) * 4}]
+
         num_fila += 1
         fila, errores = _procesar_fila(
             ws, col_map, nombre_archivo, num_fila, anio, mes, meta
@@ -148,8 +154,13 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
         if fila:
             resultado["filas"].append(fila)
             resultado["errores"].extend(errores)
-            if fila.get("provincia"):
-                ultima_provincia = fila["provincia"]
+            if fila.get("tipo") or fila.get("contratista"):
+                ultima_fila_ctx = {
+                    "nombre_contrato": fila.get("nombre_contrato"),
+                    "tarea":           fila.get("tarea"),
+                    "tipo":            fila.get("tipo"),
+                    "contratista":     fila.get("contratista"),
+                }
 
 
 def _construir_col_map(header_ws: list) -> dict:
@@ -168,9 +179,23 @@ def _construir_col_map(header_ws: list) -> dict:
         return {}
 
     col_map = {}
+    n = len(detectados)
     for i, (x0, campo) in enumerate(detectados):
-        x_fin = detectados[i + 1][0] if i + 1 < len(detectados) else 99999
-        col_map[campo] = (x0 - 15, x_fin)  # tolerancia 15px
+        # x_fin: punto medio entre este header y el siguiente
+        if i + 1 < n:
+            x_sig = detectados[i + 1][0]
+            x_fin = (x0 + x_sig) / 2 + 5  # punto medio + un poco más para que el dato del campo actual caiga acá
+        else:
+            x_fin = 99999
+
+        # x_inicio: punto medio entre el header anterior y este
+        if i > 0:
+            x_prev = detectados[i - 1][0]
+            x_ini  = (x_prev + x0) / 2 + 5
+        else:
+            x_ini  = 0
+
+        col_map[campo] = (x_ini, x_fin)
 
     return col_map
 
