@@ -134,7 +134,7 @@ def top_items(
     rows = db.execute(text(f"""
         SELECT
             di.item_codigo,
-            LEFT(COALESCE(fc.tarea, di.descripcion), 60)            AS tarea,
+            LEFT(fc.tarea, 60) AS tarea,
             dc.codigo_k                                             AS contrato,
             SUM(fc.total_mes)                                       AS monto_total,
             SUM(fc.cantidades * COALESCE(fc.ptos_gasnor, 0))       AS pgn_total
