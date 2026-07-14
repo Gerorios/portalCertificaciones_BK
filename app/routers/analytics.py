@@ -328,6 +328,51 @@ def estado_cargas(
     return resultado
 
 
+@router.get("/presupuesto")
+def presupuesto_contratos(
+    _: Usuario = Depends(require_gerente_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Consumo en $ del presupuesto Naturgy vigente por contrato.
+    Solo incluye contratos con presupuesto activo cargado.
+    """
+    rows = db.execute(text("""
+        SELECT
+            dc.codigo_k                                            AS contrato,
+            dc.descripcion                                         AS descripcion,
+            dp.periodo_desde                                       AS periodo_desde,
+            dp.periodo_hasta                                       AS periodo_hasta,
+            dp.monto_presupuesto                                   AS monto_presupuesto,
+            COALESCE(SUM(fc.total_mes), 0)                         AS consumido
+        FROM dim_presupuesto_contrato dp
+        JOIN dim_contrato dc ON dp.id_contrato = dc.id_contrato
+        LEFT JOIN fact_certificaciones fc
+               ON fc.id_contrato = dp.id_contrato
+              AND fc.fecha BETWEEN dp.periodo_desde AND dp.periodo_hasta
+        WHERE dp.activo = 1
+        GROUP BY dc.codigo_k, dc.descripcion, dp.periodo_desde, dp.periodo_hasta, dp.monto_presupuesto
+        ORDER BY (COALESCE(SUM(fc.total_mes), 0) / dp.monto_presupuesto) DESC
+    """)).fetchall()
+
+    resultado = []
+    for r in rows:
+        d = dict(r._mapping)
+        monto     = float(d["monto_presupuesto"])
+        consumido = float(d["consumido"])
+        pct       = round((consumido / monto) * 100, 1) if monto else 0
+        resultado.append({
+            "contrato":          d["contrato"],
+            "descripcion":       d["descripcion"],
+            "periodo_desde":     str(d["periodo_desde"]),
+            "periodo_hasta":     str(d["periodo_hasta"]),
+            "monto_presupuesto": monto,
+            "consumido":         consumido,
+            "pct":               pct,
+        })
+    return resultado
+
+
 @router.get("/kpis-jefe")
 def kpis_jefe(
     current: Usuario = Depends(get_current_user),

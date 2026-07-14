@@ -27,6 +27,20 @@ class UsuarioUpdate(BaseModel):
     password:  Optional[str] = None
 
 
+class PresupuestoCreate(BaseModel):
+    codigo_k:          str
+    periodo_desde:     str  # YYYY-MM-DD
+    periodo_hasta:     str  # YYYY-MM-DD
+    monto_presupuesto: float
+
+
+class PresupuestoUpdate(BaseModel):
+    periodo_desde:     Optional[str] = None
+    periodo_hasta:     Optional[str] = None
+    monto_presupuesto: Optional[float] = None
+    activo:            Optional[bool] = None
+
+
 @router.get("/usuarios")
 def listar_usuarios(
     _: Usuario = Depends(require_admin),
@@ -118,6 +132,89 @@ def eliminar_carga(
     db.commit()
 
     return {"mensaje": f"Carga '{row[0]}' eliminada ({row[1]})"}
+
+
+@router.get("/presupuestos")
+def listar_presupuestos(
+    _: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(text("""
+        SELECT dp.id_presupuesto, dc.codigo_k, dp.periodo_desde, dp.periodo_hasta,
+               dp.monto_presupuesto, dp.activo
+        FROM dim_presupuesto_contrato dp
+        JOIN dim_contrato dc ON dp.id_contrato = dc.id_contrato
+        ORDER BY dp.periodo_desde DESC, dc.codigo_k
+    """)).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.post("/presupuestos", status_code=201)
+def crear_presupuesto(
+    data: PresupuestoCreate,
+    _: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    contrato = db.execute(text(
+        "SELECT id_contrato FROM dim_contrato WHERE codigo_k = :k"
+    ), {"k": data.codigo_k.upper()}).fetchone()
+
+    if not contrato:
+        raise HTTPException(400, f"Contrato {data.codigo_k} no encontrado")
+
+    db.execute(text("""
+        INSERT INTO dim_presupuesto_contrato (
+            id_contrato, periodo_desde, periodo_hasta, monto_presupuesto
+        ) VALUES (
+            :id_contrato, :periodo_desde, :periodo_hasta, :monto_presupuesto
+        )
+    """), {
+        "id_contrato":       contrato[0],
+        "periodo_desde":     data.periodo_desde,
+        "periodo_hasta":     data.periodo_hasta,
+        "monto_presupuesto": data.monto_presupuesto,
+    })
+    db.commit()
+    return {"mensaje": f"Presupuesto creado para {data.codigo_k}"}
+
+
+@router.patch("/presupuestos/{id_presupuesto}")
+def actualizar_presupuesto(
+    id_presupuesto: int,
+    data: PresupuestoUpdate,
+    _: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    existe = db.execute(text(
+        "SELECT id_presupuesto FROM dim_presupuesto_contrato WHERE id_presupuesto = :id"
+    ), {"id": id_presupuesto}).fetchone()
+
+    if not existe:
+        raise HTTPException(404, "Presupuesto no encontrado")
+
+    campos = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not campos:
+        return {"mensaje": "Sin cambios"}
+
+    set_clause = ", ".join(f"{k} = :{k}" for k in campos)
+    campos["id"] = id_presupuesto
+
+    db.execute(text(f"UPDATE dim_presupuesto_contrato SET {set_clause} WHERE id_presupuesto = :id"), campos)
+    db.commit()
+    return {"mensaje": "Presupuesto actualizado"}
+
+
+@router.delete("/presupuestos/{id_presupuesto}")
+def eliminar_presupuesto(
+    id_presupuesto: int,
+    _: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    db.execute(text(
+        "DELETE FROM dim_presupuesto_contrato WHERE id_presupuesto = :id"
+    ), {"id": id_presupuesto})
+    db.commit()
+    return {"mensaje": "Presupuesto eliminado"}
 
 
 @router.get("/estadisticas")
