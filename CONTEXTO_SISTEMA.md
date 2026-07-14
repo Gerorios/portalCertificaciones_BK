@@ -1,0 +1,332 @@
+# Sistema de Certificaciones Serytec — Contexto Completo
+
+> Documento de referencia para retomar el desarrollo sin perder contexto.
+> Última actualización: Julio 2026
+
+---
+
+## 1. Descripción general
+
+Portal web interno para que **Serytec** cargue, valide y analice las certificaciones de trabajos realizados para **Naturgy (GASNOR)**. Reemplaza el proceso manual en Excel.
+
+**Usuarios:**
+- **Admin** — acceso total
+- **Jefe de contrato** — sube certificaciones de sus contratos K, ve su dashboard
+- **Gerente** — solo lectura, ve analytics completo
+
+---
+
+## 2. Stack tecnológico
+
+| Capa | Tecnología |
+|------|-----------|
+| Backend | FastAPI + Python 3.11, SQLAlchemy, MySQL |
+| Frontend | HTML/JS puro, CSS variables, Chart.js 4.4 |
+| Deploy backend | Render.com (plan gratuito, duerme tras 15 min) |
+| Deploy frontend | Netlify |
+| Repo | https://github.com/Gerorios/portalCertificaciones_BK |
+
+**URLs producción:**
+- Backend: `https://portalcertificaciones-bk.onrender.com`
+- Frontend: `https://portalcertificaciones.netlify.app`
+
+**UptimeRobot** pinguea `/health` cada 5 min para mantener el backend activo.
+
+---
+
+## 3. Base de datos
+
+### Tablas principales
+
+```sql
+dim_contrato      -- K2, K5, K6, K8, K9, K10, K11, K12
+dim_item          -- maestro de ítems con ptos_gasnor, contrato asignado
+ma_provincias     -- Salta, Jujuy, Tucumán, Santiago del Estero (activo=1)
+fact_certificaciones  -- tabla de hechos principal
+usuarios          -- roles: admin | jefe | gerente
+carga_log         -- historial de cargas (archivo, período, filas, estado)
+```
+
+### Columnas clave de `fact_certificaciones`
+
+```
+id_item, id_contrato, id_provincia, fecha,
+cantidades, ptos_gasnor, precio_unitario, total_mes,
+tarea, tipo (OPEX/CAPEX), contratista, observaciones,
+hoja_origen, archivo_origen, cargado_por
+```
+
+> **Importante:** `ptos_gasnor` se guarda desde el archivo (certificación), NO desde el maestro.
+> El cálculo de PGN en analytics usa `fc.ptos_gasnor` para coincidir con Power BI.
+
+### Índices pendientes de aplicar
+
+```sql
+ALTER TABLE fact_certificaciones
+    ADD INDEX idx_contrato (id_contrato),
+    ADD INDEX idx_fecha (fecha),
+    ADD INDEX idx_item (id_item),
+    ADD INDEX idx_provincia (id_provincia);
+```
+
+### Query para insertar ítem en el maestro
+
+```sql
+INSERT INTO dim_item (item_codigo, id_contrato, tarea, ptos_gasnor, unidad_medida, tipo, contratista)
+VALUES (
+    '693',
+    (SELECT id_contrato FROM dim_contrato WHERE codigo_k = 'K9'),
+    'Construcción de cámara', 7500.00, 'N°', 'CAPEX', 'SER&TEC'
+);
+```
+
+---
+
+## 4. Estructura de archivos backend
+
+```
+app/
+├── main.py
+├── config.py
+├── database.py
+├── models.py              # Usuario con roles y contratos_list
+└── routers/
+│   ├── auth.py
+│   ├── certificaciones.py  # preview, confirmar, resumen, detalle
+│   ├── admin.py
+│   ├── items.py            # CRUD maestro ítems
+│   └── analytics.py        # todos los endpoints de gráficos
+└── services/
+    ├── auth.py             # JWT, bcrypt==4.0.1
+    ├── parser.py           # parser Excel robusto por nombre columna
+    ├── parser_pdf.py       # parser PDF por coordenadas x del header
+    ├── carga.py            # inserta en fact_certificaciones
+    ├── cache.py
+    └── onedrive.py         # Microsoft Graph API
+```
+
+---
+
+## 5. Flujo de carga (4 pasos)
+
+1. **Subir archivo** (.xlsx/.xls/.xlsm/.pdf) → backend parsea, devuelve `cache_id`
+2. **Seleccionar hojas** → chips de hojas; jefe solo ve las de sus contratos K (las demás con 🔒)
+3. **Preview editable** — tabla con columnas editables:
+   - **Contrato** — default del maestro de ítems, editable (se guarda como `contrato_editado`)
+   - **Provincia** — select, obligatorio antes de confirmar
+   - **Cantidad** — editable
+   - **$ Total** — editable
+4. **Confirmar** → envía `cache_id` + `hojas` + `filas_editadas`; valida duplicados por nombre de archivo
+
+### Prioridad de resolución de contrato en `carga.py`
+
+1. `contrato_editado` (usuario lo cambió en el preview) → máxima prioridad
+2. Contrato del maestro de ítems (`dim_item.id_contrato`)
+3. Fallback: contrato del archivo
+
+---
+
+## 6. Parsers
+
+### Excel (`parser.py`)
+
+- Busca columnas por nombre, no por posición (`COL_ALIAS` dict)
+- Normaliza saltos de línea y espacios en nombres de columna antes de comparar
+- Aliases K12: `DESCRIPCION→tarea`, `CANTIDAD→cantidades`, `PUNTOS→ptos_gasnor`, `$ UNIT→precio_unitario`, `TOTAL CERTIFICADO→total_mes`
+- `_encontrar_header_idx` busca `ÍTEMS/ITEMS/ÍTEM/ITEM` en cualquier columna
+- Fallback calamine si openpyxl falla
+- Provincia vacía **NO** es error bloqueante (usuario la completa en preview)
+
+### PDF (`parser_pdf.py`)
+
+- Detecta columnas automáticamente desde x0 real del header (punto medio entre columnas)
+- Incluye columna `NOMBRE` en el header para reconocer nombre_contrato
+- Hereda `item_codigo` mirando adelante cuando hay línea huérfana (solo números)
+- Hereda `tarea`, `tipo`, `contratista` de la última fila completa cuando hay línea huérfana
+- Pega números partidos (gap < 8px entre dígitos)
+- Funciona con A3 (K9SUR) y Letter (K2), suma exacta verificada
+
+---
+
+## 7. Analytics
+
+### Endpoints (`/analytics/`)
+
+Todos soportan filtros: `contratos[]`, `provincias[]`, `tipo` (OPEX/CAPEX), `desde`, `hasta`.
+El jefe siempre queda restringido a sus propios contratos.
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `/evolucion-mensual` | Monto y PGN por período |
+| `/por-contrato-mes` | Monto y PGN por contrato y período |
+| `/por-provincia` | Monto, PGN y líneas por provincia |
+| `/top-items` | Top N ítems (usa JOIN a dim_item para nombre) |
+| `/interanual` | Comparación año actual vs anterior con variación % |
+| `/contratos` | Lista de K disponibles (jefe: solo los suyos) |
+| `/provincias` | Lista desde ma_provincias activo=1 |
+| `/estado-cargas` | Estado por contrato×período desde 2025-01 |
+| `/kpis-jefe` | KPIs mes actual vs mismo mes año anterior |
+| `/presupuesto` | Consumo en $ vs presupuesto Naturgy por contrato (solo admin/gerente) |
+
+### Cálculo de PGN
+
+```sql
+SUM(fc.cantidades * COALESCE(fc.ptos_gasnor, 0))
+```
+
+Usa el `ptos_gasnor` de la **certificación** (no del maestro) para coincidir con Power BI.
+`COALESCE` maneja archivos que no traen esa columna (ej: K12).
+
+### Provincias — comparación case-insensitive
+
+```sql
+AND UPPER(pv.provincia) IN ('JUJUY', 'SALTA', ...)
+```
+
+Esto resuelve el error 500 cuando el frontend envía las provincias en mayúsculas.
+
+---
+
+## 8. Frontend — páginas
+
+| Página | Ruta | Rol |
+|--------|------|-----|
+| `index.html` | `/` | Login |
+| `dashboard.html` | `/pages/` | Admin/Jefe |
+| `analytics.html` | `/pages/` | Admin/Gerente |
+| `upload.html` | `/pages/` | Admin/Jefe |
+| `historial.html` | `/pages/` | Admin/Jefe/Gerente |
+| `items.html` | `/pages/` | Admin |
+| `admin.html` | `/pages/` | Admin |
+
+### Dashboard (jefe)
+
+- KPIs interanuales: facturación y PGN mes actual vs mismo mes año anterior
+- Barra de filtros: dropdown multiselect contratos + período desde/hasta + toggle $/PGN
+- Total del período en bloque separado debajo de la barra
+- Gráfico línea evolución + gráfico interanual con toggle $/PGN
+- Tabla de certificaciones con paginación y filtros
+- Modal pendientes (vencidos en rojo, pendientes en amarillo)
+
+### Analytics (gerente)
+
+- Barra de filtros horizontal compacta con dropdown colapsable para contratos y provincias
+- Toggle pastilla: Ambos/OPEX/CAPEX
+- Toggle pastilla: $/PGN (afecta TODOS los gráficos sin refetch)
+- Badge naranja en el botón de filtros cuando hay contratos/provincias excluidos
+- Descripción de filtros activos en texto debajo del título
+- **Presupuesto Naturgy por contrato** (solo admin/gerente, no depende de la barra de filtros de fecha): KPIs de presupuesto total/consumido/% global/contratos en alerta + un medidor de progreso por contrato con presupuesto cargado, ordenado de mayor a menor % consumido. Colores de estado: verde real `#16A34A` <80%, `--amarillo` 80-99%, `--rojo` ≥100% (`--verde` del sistema es alias del dorado de marca y no sirve para esto, ver sección 15)
+- Gráficos: línea evolución, barras por contrato, barras horizontales por provincia, interanual, top ítems
+- Estado de cargas al final con filtros por período/contrato/tipo
+
+### Presupuesto por contrato
+
+- Tabla `dim_presupuesto_contrato` (id_contrato, periodo_desde, periodo_hasta, monto_presupuesto, activo) — permite múltiples ciclos históricos por contrato, no pisa el anterior
+- CRUD en `admin.html` → sección "Presupuesto por contrato", solo admin (`/admin/presupuestos`)
+- El consumo se calcula con `SUM(fc.total_mes)` filtrando `fc.fecha BETWEEN periodo_desde AND periodo_hasta` — mismo criterio de fecha que el resto de analytics
+- Ciclo actual cargado: mayo 2026 – abril 2027
+
+---
+
+## 9. Variables de entorno (Render)
+
+```
+DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+SECRET_KEY, ALGORITHM=HS256
+ALLOWED_ORIGINS=https://portalcertificaciones.netlify.app
+AZURE_TENANT_ID=08487b0c-70cd-473c-80da-193f2f00be92
+AZURE_CLIENT_ID=1b3d7b6d-23c8-412b-b223-d5188e4df9c6
+AZURE_CLIENT_SECRET=⚠️ REGENERAR — quedó expuesto
+ONEDRIVE_USER=administracion@serytecsas.onmicrosoft.com
+OPENAI_API_KEY   (disponible pero parser PDF IA deprecado — usar parser_pdf.py)
+```
+
+---
+
+## 10. Deploy
+
+### Render (backend)
+
+- `.python-version` = 3.11.9
+- `apt.txt`: `poppler-utils` (para pdf2image si se usa)
+- `requirements.txt` incluye: `bcrypt==4.0.1`, `pydantic-settings`, `pandas --only-binary=:all:`, `pdfplumber`, `openpyxl`, `calamine`
+- Build command: `pip install -r requirements.txt`
+
+### Netlify (frontend)
+
+- `js/api.js`: `const API = "https://portalcertificaciones-bk.onrender.com"`
+- Paleta: `--primario: #DCA028`, `--secundario: #4A4A4A`
+
+---
+
+## 11. OneDrive
+
+Sube PDFs/Excel a la carpeta de OneDrive corporativo al confirmar carga.
+
+```
+Certificaciones / K8 / 2026-05 / archivo.xlsx
+```
+
+---
+
+## 12. Problemas conocidos y soluciones
+
+| Problema | Causa | Solución |
+|----------|-------|----------|
+| CORS al entrar al portal | Backend durmiendo en Render gratuito | UptimeRobot pingueando /health |
+| "Web Page Blocked" en PCs Naturgy | Firewall corporativo bloquea onrender.com | Usar hotspot o dominio propio |
+| Error SSL en PCs con Citrix | Citrix intercepta certificados | Aceptar advertencia o usar hotspot |
+| PGN diferente al de PBI | Se usaba di.ptos_gasnor del maestro | Ahora usa fc.ptos_gasnor de la certificación |
+| Provincias no filtran (error 500) | Comparación case-sensitive | UPPER() en el WHERE |
+| PDF K9SUR campos vacíos | pdfplumber parte filas en dos líneas | Herencia de contexto en filas huérfanas |
+| K12 Excel no detectado | Header dice "ITEM" sin S | Agregado a _encontrar_header_idx |
+| Contrato editado en preview no impacta | carga.py ignoraba contrato_editado | Verificar campo contrato_editado en fila |
+
+---
+
+## 13. Pendientes
+
+- [ ] **Urgente:** Regenerar secreto Azure (`AZURE_CLIENT_SECRET` quedó expuesto en chat)
+- [x] **Bug UX (resuelto):** un ítem que aparece en más de una fila del preview (ej. mismo ítem en Jujuy y en Salta) no agrupaba las filas — si el usuario editaba el contrato en una fila y no en la otra, la fila no editada se cargaba con el contrato del maestro en vez del elegido. `carga.py` y el resto del backend funcionaban correctamente; el problema era que `editarContrato()` en `upload.html` solo tocaba la fila editada. Solución: al cambiar el contrato de una fila, se aplica automáticamente a todas las filas con el mismo `item_codigo` en el preview.
+- [ ] **UX:** el mensaje de error al re-subir un archivo duplicado (`certificaciones.py:126`) le dice a cualquier usuario "eliminá la carga anterior desde el historial", pero solo el admin puede eliminar cargas (decisión confirmada: se mantiene admin-only). Corregir el texto para que el jefe sepa que debe pedírselo a un admin, en vez de sugerir una acción que no puede hacer.
+- [ ] **Bug:** cuando el archivo no trae la columna `ptos_gasnor` (ej. K12), `carga.py` guarda `NULL` y el PGN queda en 0 en analytics (`COALESCE(fc.ptos_gasnor, 0)`). Debería, en ese caso, tomar `ptos_gasnor` del maestro (`dim_item`) y multiplicarlo por `cantidades`. Hoy no hay ningún fallback a `dim_item` en `carga.py` ni en `parser.py`.
+- [ ] Aplicar índices en `fact_certificaciones`
+- [ ] Dominio propio para el backend (evita bloqueo en redes Naturgy)
+- [ ] Upgrade Render a plan Starter ($7/mes) para eliminar el sleep
+- [x] Verificar que `sidebar.js` tiene link "analytics" para gerente — confirmado, ya está (`sidebar.js:13`, roles `["admin","gerente"]`)
+
+---
+
+## 14. Contratos activos
+
+| Código | Descripción |
+|--------|-------------|
+| K2 | Instalaciones domiciliarias — Salta/Jujuy |
+| K5 | Mantenimiento de redes |
+| K6 | Mantenimiento de redes |
+| K8 | Obras |
+| K9 | Instalaciones auxiliares — Tucumán/Santiago del Estero |
+| K10 | Mantenimiento |
+| K11 | Mantenimiento |
+| K12 | Medidores |
+| OTROS | Estructuras o trabajos de taller |
+
+---
+
+## 15. Paleta de colores CSS
+
+```css
+--primario:      #DCA028
+--primario-dark: #B8841F
+--primario-light:#FDF3DC
+--secundario:    #4A4A4A
+--rojo:          #DC2626
+--amarillo:      #D97706
+--azul:          #2563EB
+
+/* --verde es alias de --primario (#DCA028) por compatibilidad histórica —
+   NO es un verde real. Para indicadores de estado que necesiten un verde
+   distinguible de --amarillo (ej. medidores de presupuesto), usar #16A34A
+   directo en vez de var(--verde). */
+--verde:         var(--primario)
+```
