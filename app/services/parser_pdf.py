@@ -4,7 +4,9 @@ parser_pdf.py
 Lee PDFs de certificaciones de Naturgy.
 Detecta los límites de columna desde el x0 real de cada palabra del header.
 Pega números partidos (problema de pdfplumber con PDFs A3).
-Hereda item_codigo cuando pdfplumber parte una fila en dos líneas.
+Las filas lógicas pueden ocupar varias líneas del PDF (cantidad u
+observaciones en línea aparte): toda línea sin código de ítem se fusiona
+con la fila del ítem anterior.
 """
 import io
 import re
@@ -47,11 +49,12 @@ def parsear_pdf_bytes(
     periodo_mes: int,
 ) -> dict:
     resultado: dict[str, Any] = {
-        "archivo": nombre_archivo,
-        "hojas":   [nombre_archivo],
-        "filas":   [],
-        "errores": [],
-        "periodo": f"{periodo_anio}-{periodo_mes:02d}",
+        "archivo":         nombre_archivo,
+        "hojas":           [nombre_archivo],
+        "filas":           [],
+        "errores":         [],
+        "periodo":         f"{periodo_anio}-{periodo_mes:02d}",
+        "total_declarado": None,
     }
     try:
         with pdfplumber.open(io.BytesIO(contenido)) as pdf:
@@ -66,12 +69,19 @@ def parsear_pdf_bytes(
     return resultado
 
 
+# Al detectar cualquiera de estas palabras, terminó la zona de datos de la página
+FOOTER_PALABRAS = ("FIRMA", "ACLARACIÓN", "ACLARACION",
+                   "TOTAL A CERTIFICAR", "PERIODO A CERTIFICAR")
+
+
 def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
     words = page.extract_words()
     if not words:
         return
 
     meta = _extraer_meta(words)
+    if resultado.get("total_declarado") is None:
+        resultado["total_declarado"] = meta.get("total_declarado")
 
     # Agrupar por línea
     lineas: dict[int, list] = {}
@@ -94,73 +104,38 @@ def _procesar_pagina(page, num_pagina, nombre_archivo, anio, mes, resultado):
     if header_top is None or not col_map:
         return
 
-    # Procesar filas de datos
-    num_fila        = 0
-    ultimo_item     = None
-    ultima_fila_ctx = {}
-    tops_ordenados  = sorted(k for k in lineas.keys() if k > header_top)
-    item_x_max      = col_map.get("item_codigo", (0, 384))[1]
+    # Agrupar líneas en filas lógicas: una línea que empieza con código de
+    # ítem abre una fila nueva; las demás son continuación de la anterior
+    item_x_max = col_map.get("item_codigo", (0, 384))[1]
+    grupos: list[list[list]] = []
+    grupo_actual = None
 
-    for idx, top in enumerate(tops_ordenados):
+    for top in sorted(k for k in lineas.keys() if k > header_top):
         ws = sorted(lineas[top], key=lambda w: w["x0"])
         if not ws:
             continue
 
-        primer    = ws[0]["text"].strip()
-        x0_primer = ws[0]["x0"]
-        es_item   = _es_item_valido(primer) and x0_primer < item_x_max
+        texto_linea = " ".join(w["text"] for w in ws).upper()
+        if any(p in texto_linea for p in FOOTER_PALABRAS):
+            break  # empezó el pie de firmas/totales: no hay más datos
+
+        primer  = ws[0]
+        es_item = _es_item_valido(primer["text"].strip()) and primer["x0"] < item_x_max
 
         if es_item:
-            ultimo_item = primer
-        else:
-            # Sin código — verificar si tiene datos en columna de cantidades
-            if "cantidades" not in col_map:
-                continue
-            x_min_cant, x_max_cant = col_map["cantidades"]
-            tiene_datos = any(x_min_cant <= w["x0"] < x_max_cant for w in ws)
-            if not tiene_datos:
-                continue
+            grupo_actual = [ws]
+            grupos.append(grupo_actual)
+        elif grupo_actual is not None:
+            grupo_actual.append(ws)
+        # líneas antes de la primera fila con ítem: ruido, se ignoran
 
-            # Determinar el item_codigo: mirar adelante si el siguiente tiene el ítem
-            codigo_a_usar = ultimo_item
-            if idx + 1 < len(tops_ordenados):
-                ws_sig = sorted(lineas[tops_ordenados[idx + 1]], key=lambda w: w["x0"])
-                if ws_sig:
-                    sig_primer = ws_sig[0]["text"].strip()
-                    sig_x0     = ws_sig[0]["x0"]
-                    if _es_item_valido(sig_primer) and sig_x0 < item_x_max:
-                        codigo_a_usar = sig_primer
-
-            if not codigo_a_usar:
-                continue
-
-            ws = [{"text": codigo_a_usar, "x0": col_map["item_codigo"][0] + 1,
-                   "top": top, "width": 20}] + ws
-
-            # Inyectar contexto de fila anterior (tarea, tipo, contratista)
-            for campo in ["nombre_contrato", "tarea", "tipo", "contratista"]:
-                if ultima_fila_ctx.get(campo) and campo in col_map:
-                    x_min_c, x_max_c = col_map[campo]
-                    ya_tiene = any(x_min_c <= w["x0"] < x_max_c for w in ws)
-                    if not ya_tiene:
-                        txt = ultima_fila_ctx[campo]
-                        ws = ws + [{"text": txt, "x0": col_map[campo][0] + 1,
-                                    "top": top, "width": len(txt) * 4}]
-
-        num_fila += 1
+    for num_fila, grupo in enumerate(grupos, start=1):
         fila, errores = _procesar_fila(
-            ws, col_map, nombre_archivo, num_fila, anio, mes, meta
+            grupo, col_map, nombre_archivo, num_fila, anio, mes, meta
         )
         if fila:
             resultado["filas"].append(fila)
             resultado["errores"].extend(errores)
-            if fila.get("tipo") or fila.get("contratista"):
-                ultima_fila_ctx = {
-                    "nombre_contrato": fila.get("nombre_contrato"),
-                    "tarea":           fila.get("tarea"),
-                    "tipo":            fila.get("tipo"),
-                    "contratista":     fila.get("contratista"),
-                }
 
 
 def _construir_col_map(header_ws: list) -> dict:
@@ -201,7 +176,7 @@ def _construir_col_map(header_ws: list) -> dict:
 
 
 def _get_texto(ws: list, col_map: dict, campo: str) -> str:
-    """Extrae y pega palabras de un campo según su rango x."""
+    """Extrae y pega palabras de un campo según su rango x (una línea)."""
     if campo not in col_map:
         return ""
     x_min, x_max = col_map[campo]
@@ -212,6 +187,31 @@ def _get_texto(ws: list, col_map: dict, campo: str) -> str:
     if campo == "item_codigo":
         return palabras[0]["text"].strip()
     return _pegar_palabras(palabras)
+
+
+def _get_texto_grupo(grupo: list, col_map: dict, campo: str, modo: str) -> str:
+    """
+    Extrae un campo de una fila lógica multilínea.
+    modo "primero": primera línea con valor (campos cortos y numéricos —
+                    los valores de líneas siguientes son de otra cosa).
+    modo "juntar":  concatena todas las líneas (textos largos que el PDF
+                    parte: tarea, nombre de contrato, observaciones).
+    """
+    chunks = [t for ws in grupo if (t := _get_texto(ws, col_map, campo))]
+    if not chunks:
+        return ""
+    if modo == "juntar":
+        return " ".join(chunks)
+    return chunks[0]
+
+
+def _get_num_grupo(grupo: list, col_map: dict, campo: str) -> Optional[str]:
+    """Primer valor numérico válido del campo en las líneas del grupo."""
+    for ws in grupo:
+        n = _limpiar_num(_get_texto(ws, col_map, campo))
+        if n is not None:
+            return n
+    return None
 
 
 def _pegar_palabras(ws: list) -> str:
@@ -263,25 +263,32 @@ def _limpiar_num(s: str) -> Optional[str]:
 
 
 def _extraer_meta(words: list) -> dict:
-    meta = {"k_gasnor": None, "nro_np": None}
+    meta = {"k_gasnor": None, "nro_np": None, "total_declarado": None}
     full = " ".join(w["text"] for w in words).upper()
     m = re.search(r'\bK(\d+)\b', full)
     if m:
         meta["k_gasnor"] = "K" + m.group(1)
+    # El monto puede venir partido en varias palabras ("3 9.072.433,92")
+    m = re.search(r'TOTAL MES\s*\$?\s*((?:[\d\.,]+\s*)+)', full)
+    if m:
+        n = _limpiar_num(m.group(1).replace(" ", ""))
+        if n is not None:
+            meta["total_declarado"] = float(n)
     return meta
 
 
-def _procesar_fila(ws, col_map, nombre_archivo, num_fila, anio, mes, meta):
+def _procesar_fila(grupo, col_map, nombre_archivo, num_fila, anio, mes, meta):
+    """grupo: lista de líneas (cada una, lista de words) de una fila lógica."""
     errores = []
 
-    def get(campo):
-        return _get_texto(ws, col_map, campo)
+    def get(campo, modo="primero"):
+        return _get_texto_grupo(grupo, col_map, campo, modo)
 
     def num(campo):
-        return _limpiar_num(get(campo))
+        return _get_num_grupo(grupo, col_map, campo)
 
     item_codigo   = get("item_codigo").strip()
-    tarea         = get("tarea").strip() or None
+    tarea         = get("tarea", "juntar").strip() or None
     contrato_raw  = get("contrato").strip().upper()
     unidad_medida = get("unidad_medida").strip() or None
     ptos_gasnor   = num("ptos_gasnor")
@@ -291,7 +298,7 @@ def _procesar_fila(ws, col_map, nombre_archivo, num_fila, anio, mes, meta):
     cantidades    = num("cantidades")
     precio_unit   = num("precio_unitario")
     total_mes     = num("total_mes")
-    observaciones = get("observaciones").strip() or None
+    observaciones = get("observaciones", "juntar").strip() or None
 
     # Normalizar contrato
     m = re.match(r'K\d+', contrato_raw)

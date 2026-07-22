@@ -25,6 +25,9 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # El .env también guarda credenciales de OneDrive/Azure que lee
+        # onedrive.py por os.environ — no deben romper la carga de Settings
+        extra = "ignore"
 
 @lru_cache
 def get_settings() -> Settings:

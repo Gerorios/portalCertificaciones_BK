@@ -47,11 +47,12 @@ def parsear_bytes(
     periodo_mes: int,
 ) -> dict:
     resultado: dict[str, Any] = {
-        "archivo": nombre_archivo,
-        "hojas":   [],
-        "filas":   [],
-        "errores": [],
-        "periodo": f"{periodo_anio}-{periodo_mes:02d}",
+        "archivo":         nombre_archivo,
+        "hojas":           [],
+        "filas":           [],
+        "errores":         [],
+        "periodo":         f"{periodo_anio}-{periodo_mes:02d}",
+        "total_declarado": None,
     }
 
     try:
@@ -110,6 +111,8 @@ def _procesar_hoja(xl, nombre_hoja, nombre_archivo, anio, mes, resultado, conten
         return
 
     meta = _extraer_meta(df_raw, nombre_hoja, anio, mes)
+    if resultado.get("total_declarado") is None:
+        resultado["total_declarado"] = meta.get("total_declarado")
 
     # Header como lista de strings en UPPER
     header_upper = [
@@ -153,7 +156,8 @@ def _encontrar_header_idx(df: pd.DataFrame):
 
 
 def _extraer_meta(df: pd.DataFrame, nombre_hoja: str, anio: int, mes: int) -> dict:
-    meta = {"k_gasnor": None, "nro_np": None, "fecha": f"{anio}-{mes:02d}-01"}
+    meta = {"k_gasnor": None, "nro_np": None, "fecha": f"{anio}-{mes:02d}-01",
+            "total_declarado": None}
 
     m = re.search(r'K\d+', nombre_hoja.upper())
     if m:
@@ -170,8 +174,28 @@ def _extraer_meta(df: pd.DataFrame, nombre_hoja: str, anio: int, mes: int) -> di
             for i, v in enumerate(vals):
                 if "NP" in v.upper() and i + 1 < len(vals):
                     meta["nro_np"] = vals[i + 1]
+        if meta["total_declarado"] is None:
+            for i, v in enumerate(vals):
+                if "TOTAL MES" in v.upper() and i + 1 < len(vals):
+                    meta["total_declarado"] = _parsear_monto(vals[i + 1])
+                    break
 
     return meta
+
+
+def _parsear_monto(v: str):
+    """'$ 39.072.433,92' | '39072433.92' → float, o None si no es un monto."""
+    s = re.sub(r"[\$\s]", "", str(v))
+    if not s:
+        return None
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
 
 
 def _procesar_fila(row, col_map: dict, hoja, num_fila, archivo, meta):
