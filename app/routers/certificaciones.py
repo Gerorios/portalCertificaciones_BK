@@ -11,6 +11,9 @@ from app.services.parser import parsear_bytes
 from app.services.carga import cargar_certificaciones
 from app.services.cache import guardar, recuperar, limpiar
 from app.services.parser_pdf import parsear_pdf_bytes
+from app.services.validacion import (
+    revalidar_fila, filtrar_visibles_preview, filtrar_cargables,
+)
 
 router = APIRouter(prefix="/certificaciones", tags=["certificaciones"])
 
@@ -35,42 +38,42 @@ async def preview(
     else:
         resultado = parsear_bytes(contenido, archivo.filename, periodo_anio, periodo_mes)
 
-        print(f"DEBUG - Archivo: {archivo.filename}")
-        print(f"DEBUG - Filas totales: {len(resultado['filas'])}")
-        print(f"DEBUG - Errores: {resultado['errores'][:3]}")
-        print(f"DEBUG - Hojas: {resultado['hojas']}")
-
-    filas_validas = [
-       f for f in resultado["filas"]
-         if float(f.get("cantidades") or 0) != 0
-                    ]
-    print(f"DEBUG - Filas con cant>0: {len(filas_validas)}")
-
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
-    filas_validas = [
-        f for f in resultado["filas"]
-        if float(f.get("cantidades") or 0) != 0
+    # Se muestran todas las filas salvo las de plantilla (sin cantidad ni montos).
+    # Las incompletas (con plata pero sin cantidad/provincia) quedan visibles
+    # con error para que el usuario las corrija — nunca se ocultan.
+    filas_visibles = filtrar_visibles_preview(resultado["filas"])
+
+    provincias_validas = [
+        r[0] for r in db.execute(text(
+            "SELECT provincia FROM ma_provincias WHERE activo = 1"
+        )).fetchall()
     ]
 
-    # Validar cada ítem contra dim_item
-    for fila in filas_validas:
-        item_codigo = fila.get("item_codigo", "").replace(".", ",")
-        existe = db.execute(text("""
-            SELECT 1 FROM dim_item
-            WHERE REPLACE(item_codigo, '.', ',') = :item
-            LIMIT 1
-        """), {"item": item_codigo}).fetchone()
+    items_existentes: dict[str, bool] = {}
+    for fila in filas_visibles:
+        codigo = (fila.get("item_codigo") or "").replace(".", ",")
+        if codigo not in items_existentes:
+            items_existentes[codigo] = db.execute(text("""
+                SELECT 1 FROM dim_item
+                WHERE REPLACE(item_codigo, '.', ',') = :item
+                LIMIT 1
+            """), {"item": codigo}).fetchone() is not None
 
-        if not existe:
-            fila["tiene_error"]   = True
-            fila["error_detalle"] = f"Ítem {fila['item_codigo']} no encontrado en el maestro"
+        fila["tiene_error"], fila["error_detalle"] = revalidar_fila(
+            fila,
+            item_existe=items_existentes[codigo],
+            provincias_validas=provincias_validas,
+        )
+        fila["item_en_maestro"] = items_existentes[codigo]
 
     resumen = {
-        "total":     len(filas_validas),
-        "con_error": sum(1 for f in filas_validas if f["tiene_error"]),
-        "total_mes": _sumar_total(filas_validas),
+        "total":           len(filas_visibles),
+        "con_error":       sum(1 for f in filas_visibles if f["tiene_error"]),
+        "total_mes":       _sumar_total(filas_visibles),
+        "total_declarado": resultado.get("total_declarado"),
     }
 
     id_cache = guardar({
@@ -88,7 +91,7 @@ async def preview(
         "hojas":    resultado["hojas"],
         "periodo":  resultado["periodo"],
         "resumen":  resumen,
-        "filas":    filas_validas,
+        "filas":    filas_visibles,
         "errores":  resultado["errores"],
     }
 
@@ -126,23 +129,26 @@ async def confirmar(
             f"Si necesitás reemplazarlo, eliminá la carga anterior desde el historial."
         )
 
+    provincias_validas = [
+        r[0] for r in db.execute(text(
+            "SELECT provincia FROM ma_provincias WHERE activo = 1"
+        )).fetchall()
+    ]
+
+    # La cargabilidad se revalida acá con la regla de dominio (ver CONTEXT.md):
+    # el flag `tiene_error` que venga del navegador o del parser se ignora.
     if filas_del_frontend:
-        filas_ok = [
-            f for f in filas_del_frontend
-            if not f.get("tiene_error")
-            and float(f.get("cantidades") or 0) != 0
-            and f.get("provincia")
-        ]
-        contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
+        candidatas = filas_del_frontend
     else:
-        resultado = cached["resultado"]
-        filas_ok = [
-            f for f in resultado["filas"]
-            if not f["tiene_error"]
-            and float(f.get("cantidades") or 0) != 0
-            and (not hojas_seleccionadas or f["hoja_origen"] in hojas_seleccionadas)
+        candidatas = [
+            f for f in cached["resultado"]["filas"]
+            if not hojas_seleccionadas or f["hoja_origen"] in hojas_seleccionadas
         ]
-        contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
+
+    filas_ok = filtrar_cargables(candidatas, provincias_validas=provincias_validas)
+    for f in filas_ok:
+        f["tiene_error"] = False
+    contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
 
     for k in contratos_cargados:
         if k:
