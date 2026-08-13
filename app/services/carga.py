@@ -71,6 +71,22 @@ def _resolver_id_contrato(db: Session, item_codigo: str, contrato_k: str, usuari
     return _id_contrato_por_k(db, contrato_k)
 
 
+def _ptos_gasnor_con_fallback(db: Session, valor_archivo, id_item: int):
+    """
+    ptos_gasnor a guardar en la certificación:
+    - si el archivo lo trae → ese (coincide con Power BI)
+    - si no (ej. K12, que no trae la columna) → el del maestro (dim_item),
+      para que el PGN no quede en 0 en analytics
+    - si el maestro tampoco lo tiene → None (como antes)
+    """
+    if valor_archivo not in (None, ""):
+        return valor_archivo
+    row = db.execute(text(
+        "SELECT ptos_gasnor FROM dim_item WHERE id_item = :id"
+    ), {"id": id_item}).fetchone()
+    return row[0] if row else None
+
+
 def _resolver_id_provincia(db: Session, nombre: str) -> int | None:
     row = db.execute(text(
         "SELECT id FROM ma_provincias WHERE UPPER(provincia) = UPPER(:n)"
@@ -136,7 +152,7 @@ def cargar_certificaciones(
             "tarea":           fila.get("tarea"),
             "id_contrato":     id_contrato,
             "unidad_medida":   fila.get("unidad_medida"),
-            "ptos_gasnor":     fila.get("ptos_gasnor"),
+            "ptos_gasnor":     _ptos_gasnor_con_fallback(db, fila.get("ptos_gasnor"), id_item),
             "tipo":            fila.get("tipo"),
             "contratista":     fila.get("contratista"),
             "id_provincia":    id_provincia,

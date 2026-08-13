@@ -20,6 +20,15 @@ router = APIRouter(prefix="/certificaciones", tags=["certificaciones"])
 MAX_FILE_MB = 20
 
 
+def mensaje_archivo_duplicado(archivo: str, rol: str) -> str:
+    """Solo el admin puede eliminar cargas del historial; al resto hay que
+    decirle que se lo pida a un admin, no sugerirle una acción que no puede hacer."""
+    base = f"El archivo '{archivo}' ya fue cargado anteriormente. "
+    if rol == "admin":
+        return base + "Si necesitás reemplazarlo, eliminá la carga anterior desde el historial."
+    return base + "Si necesitás reemplazarlo, pedile a un administrador que elimine la carga anterior desde el historial."
+
+
 # ── Preview ───────────────────────────────────────────────────
 @router.post("/preview")
 async def preview(
@@ -123,11 +132,7 @@ async def confirmar(
     """), {"archivo": cached["archivo"]}).scalar()
 
     if ya_existe:
-        raise HTTPException(
-            400,
-            f"El archivo '{cached['archivo']}' ya fue cargado anteriormente. "
-            f"Si necesitás reemplazarlo, eliminá la carga anterior desde el historial."
-        )
+        raise HTTPException(400, mensaje_archivo_duplicado(cached["archivo"], current.rol))
 
     provincias_validas = [
         r[0] for r in db.execute(text(
