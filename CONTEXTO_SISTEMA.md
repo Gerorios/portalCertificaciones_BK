@@ -345,3 +345,38 @@ Certificaciones / K8 / 2026-05 / archivo.xlsx
    directo en vez de var(--verde). */
 --verde:         var(--primario)
 ```
+
+---
+
+## 16. Registro de sesiones de desarrollo
+
+> Regla de trabajo desde 2026-08-14 (pedido del usuario): cada sesión sobre el portal
+> se documenta acá en detalle, y **nada se deploya sin PR** (`desarollo` → `main`)
+> con sus commits correspondientes.
+
+### 2026-08-13 — Migración al VPS propio (backend dockerizado)
+
+Ejecutada completa; detalle en `docs/arquitectura-produccion-vps.md` y el plan
+`docs/superpowers/plans/2026-08-13-migracion-vps-docker.md`. Resumen: backend en Docker
+(`python:3.11-slim`, **1 worker** por el cache de preview en memoria — no escalar sin sacar
+el cache del proceso), frontend estático por Nginx, `https://certificaciones.serytec.com.ar`
+con SSL, índice `idx_fecha` aplicado (los otros 3 del §3 ya existían), `js/api.js`
+multi-entorno. Render/Netlify quedan de respaldo. Pendientes: rotar `AZURE_CLIENT_SECRET`,
+repuntar UptimeRobot.
+
+### 2026-08-14 — Fixes del backlog: PGN de K12 y mensaje de duplicados (commit `872fd45`)
+
+- **`app/services/carga.py`** — nueva `_ptos_gasnor_con_fallback(db, valor_archivo, id_item)`:
+  si el archivo no trae `ptos_gasnor` (None o "", caso K12), toma el del maestro `dim_item`;
+  si lo trae, se respeta el del archivo (criterio Power BI, §3). Usada en el INSERT de
+  `cargar_certificaciones`. Resuelve el bug "PGN queda en 0" del §13.
+- **`app/routers/certificaciones.py`** — nueva `mensaje_archivo_duplicado(archivo, rol)`:
+  el mensaje de archivo duplicado del confirmar ahora distingue rol (admin: "eliminá desde
+  el historial"; jefe/gerente: "pedile a un administrador"). Resuelve el ítem UX del §13.
+- **Tests (TDD)**: `tests/test_carga_ptos_gasnor.py` (5 tests, fake db) y
+  `tests/test_mensaje_duplicado.py` (3 tests). Suite completa: 36/36 verde.
+- **Backfill del histórico**: `docs/sql/2026-08-14-backfill-ptos-gasnor.sql` preparado y
+  **NO ejecutado** — ⚠️ la BD del portal es la misma en dev y producción (`testing`);
+  correr solo con OK explícito. Probado por el usuario en local: funciona bien.
+- **Estado**: commiteado y pusheado en `desarollo`; deploy al VPS pendiente de PR + merge
+  a `main` (flujo nuevo) y del backfill.
