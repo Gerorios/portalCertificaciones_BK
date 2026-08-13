@@ -231,7 +231,10 @@ Esto resuelve el error 500 cuando el frontend envía las provincias en mayúscul
 
 ---
 
-## 9. Variables de entorno (Render)
+## 9. Variables de entorno
+
+> Desde 2026-08-13 las variables de producción viven en `/var/www/PortalCertificaciones_back/.env`
+> del VPS (chmod 600, NO commiteado). Render conserva una copia como respaldo.
 
 ```
 DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
@@ -289,6 +292,7 @@ Certificaciones / K8 / 2026-05 / archivo.xlsx
 | PDF K9SUR campos vacíos | pdfplumber parte filas en dos líneas | Herencia de contexto en filas huérfanas |
 | K12 Excel no detectado | Header dice "ITEM" sin S | Agregado a _encontrar_header_idx |
 | Contrato editado en preview no impacta | carga.py ignoraba contrato_editado | Verificar campo contrato_editado en fila |
+| Lentitud general (arranque en frío) | Render free duerme tras 15 min | Migrado al VPS propio 2026-08-13 (ver docs/arquitectura-produccion-vps.md) |
 
 ---
 
@@ -296,14 +300,16 @@ Certificaciones / K8 / 2026-05 / archivo.xlsx
 
 > Ver `docs/arquitectura-produccion-vps.md` y plan `docs/superpowers/plans/2026-08-13-migracion-vps-docker.md` para la migración al VPS (será completada en Task 10).
 
-- [ ] **Urgente:** Regenerar secreto Azure (`AZURE_CLIENT_SECRET` quedó expuesto en chat)
+- [ ] **Urgente:** Regenerar secreto Azure (`AZURE_CLIENT_SECRET` quedó expuesto en chat) — pendiente; programado como Task 9 de la migración al VPS
 - [x] **Bug UX (resuelto):** un ítem que aparece en más de una fila del preview (ej. mismo ítem en Jujuy y en Salta) no agrupaba las filas — si el usuario editaba el contrato en una fila y no en la otra, la fila no editada se cargaba con el contrato del maestro en vez del elegido. `carga.py` y el resto del backend funcionaban correctamente; el problema era que `editarContrato()` en `upload.html` solo tocaba la fila editada. Solución: al cambiar el contrato de una fila, se aplica automáticamente a todas las filas con el mismo `item_codigo` en el preview.
 - [ ] **UX:** el mensaje de error al re-subir un archivo duplicado (`certificaciones.py:126`) le dice a cualquier usuario "eliminá la carga anterior desde el historial", pero solo el admin puede eliminar cargas (decisión confirmada: se mantiene admin-only). Corregir el texto para que el jefe sepa que debe pedírselo a un admin, en vez de sugerir una acción que no puede hacer.
 - [ ] **Bug:** cuando el archivo no trae la columna `ptos_gasnor` (ej. K12), `carga.py` guarda `NULL` y el PGN queda en 0 en analytics (`COALESCE(fc.ptos_gasnor, 0)`). Debería, en ese caso, tomar `ptos_gasnor` del maestro (`dim_item`) y multiplicarlo por `cantidades`. Hoy no hay ningún fallback a `dim_item` en `carga.py` ni en `parser.py`.
-- [ ] Aplicar índices en `fact_certificaciones`
-- [ ] Dominio propio para el backend (evita bloqueo en redes Naturgy)
-- [ ] Upgrade Render a plan Starter ($7/mes) para eliminar el sleep
+- [x] Aplicar índices en `fact_certificaciones` — hecho 2026-08-13; solo faltaba `idx_fecha` (los otros ya existían), ver docs/sql/2026-08-13-indices-fact-certificaciones.sql
+- [x] Dominio propio para el backend — hecho 2026-08-13: https://certificaciones.serytec.com.ar (VPS propio)
+- [x] ~~Upgrade Render a plan Starter~~ — innecesario: migrado al VPS propio 2026-08-13, sin costo mensual extra
 - [x] Verificar que `sidebar.js` tiene link "analytics" para gerente — confirmado, ya está (`sidebar.js:13`, roles `["admin","gerente"]`)
+- [ ] Repuntar el monitor de UptimeRobot a `https://certificaciones.serytec.com.ar/api/health` (ahora como monitoreo real, ya no anti-sleep)
+- [ ] Decidir si Render/Netlify se dan de baja o quedan como respaldo permanente
 
 ---
 
