@@ -62,14 +62,13 @@ hoja_origen, archivo_origen, cargado_por
 > **Importante:** `ptos_gasnor` se guarda desde el archivo (certificación), NO desde el maestro.
 > El cálculo de PGN en analytics usa `fc.ptos_gasnor` para coincidir con Power BI.
 
-### Índices pendientes de aplicar
+### Índices (aplicados 2026-08-13)
+
+`idx_contrato`, `idx_item`, `idx_provincia` (y también `idx_tipo`, `idx_origen`) ya existían en `fact_certificaciones`; solo hizo falta crear `idx_fecha`. Ver `docs/sql/2026-08-13-indices-fact-certificaciones.sql`.
 
 ```sql
 ALTER TABLE fact_certificaciones
-    ADD INDEX idx_contrato (id_contrato),
-    ADD INDEX idx_fecha (fecha),
-    ADD INDEX idx_item (id_item),
-    ADD INDEX idx_provincia (id_provincia);
+    ADD INDEX idx_fecha (fecha);
 ```
 
 ### Query para insertar ítem en el maestro
@@ -239,7 +238,7 @@ Esto resuelve el error 500 cuando el frontend envía las provincias en mayúscul
 ```
 DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 SECRET_KEY, ALGORITHM=HS256
-ALLOWED_ORIGINS=https://portalcertificaciones.netlify.app
+ALLOWED_ORIGINS=https://certificaciones.serytec.com.ar,https://portalcertificaciones.netlify.app
 AZURE_TENANT_ID=08487b0c-70cd-473c-80da-193f2f00be92
 AZURE_CLIENT_ID=1b3d7b6d-23c8-412b-b223-d5188e4df9c6
 AZURE_CLIENT_SECRET=⚠️ REGENERAR — quedó expuesto
@@ -265,7 +264,7 @@ y el plan `docs/superpowers/plans/2026-08-13-migracion-vps-docker.md`.
 
 ### Netlify (frontend)
 
-- `js/api.js`: `const API = "https://portalcertificaciones-bk.onrender.com"`
+- `js/api.js` es multi-entorno desde 2026-08-13: localhost → :8000, `*.netlify.app` → Render, cualquier otro host → mismo origen + `/api`.
 - Paleta: `--primario: #DCA028`, `--secundario: #4A4A4A`
 
 ---

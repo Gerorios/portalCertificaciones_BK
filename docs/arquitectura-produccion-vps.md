@@ -59,10 +59,10 @@ VPS 179.198.99.30 (Ubuntu 24.04, Hostinger KVM 2)
 | Estado | `sudo pm2 ls` | `sudo docker compose ps` (desde el dir del repo) |
 | Logs | `sudo pm2 logs forms-horas-back` | `sudo docker compose logs -f` |
 | Reiniciar | `sudo pm2 restart ...` | `sudo docker compose restart` |
-| Deploy | `git pull` + build + restart | `git pull` + `sudo docker compose up -d --build` |
+| Deploy | `git pull` + build + restart | `sudo git pull` + `sudo docker compose up -d --build` |
 | Reinicio del VPS | `pm2 startup` (ya configurado) | `restart: unless-stopped` en el compose |
 
-Deploy del frontend: `git pull` en `/var/www/PortalCertificaciones_front` — nada más
+Deploy del frontend: `sudo git pull` en `/var/www/PortalCertificaciones_front` — nada más
 (no hay build ni proceso).
 
 ## Decisiones tomadas

@@ -11,3 +11,5 @@ crear_admin.py
 run.sh
 apt.txt
 skills-lock.json
+.pytest_cache/
+.superpowers/
