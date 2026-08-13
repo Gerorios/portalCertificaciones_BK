@@ -22,15 +22,12 @@ Portal web interno para que **Serytec** cargue, valide y analice las certificaci
 |------|-----------|
 | Backend | FastAPI + Python 3.11, SQLAlchemy, MySQL |
 | Frontend | HTML/JS puro, CSS variables, Chart.js 4.4 |
-| Deploy backend | Render.com (plan gratuito, duerme tras 15 min) |
-| Deploy frontend | Netlify |
+| Deploy backend | VPS propio 179.198.99.30 — Docker (`python:3.11-slim`), ver `docs/arquitectura-produccion-vps.md`. Respaldo: Render.com free |
+| Deploy frontend | VPS propio — estáticos por Nginx. Respaldo: Netlify |
 | Repo | https://github.com/Gerorios/portalCertificaciones_BK |
 
-**URLs producción:**
-- Backend: `https://portalcertificaciones-bk.onrender.com`
-- Frontend: `https://portalcertificaciones.netlify.app`
-
-**UptimeRobot** pinguea `/health` cada 5 min para mantener el backend activo.
+**URL producción (VPS, principal):** `https://certificaciones.serytec.com.ar`
+(las URLs de Render/Netlify quedan como respaldo)
 
 ---
 
@@ -245,6 +242,11 @@ OPENAI_API_KEY   (disponible pero parser PDF IA deprecado — usar parser_pdf.py
 
 ## 10. Deploy
 
+### VPS propio (principal desde 2026-08)
+
+Ver `docs/arquitectura-produccion-vps.md` (mapa completo, operación diaria y decisiones)
+y el plan `docs/superpowers/plans/2026-08-13-migracion-vps-docker.md`.
+
 ### Render (backend)
 
 - `.python-version` = 3.11.9
@@ -285,6 +287,8 @@ Certificaciones / K8 / 2026-05 / archivo.xlsx
 ---
 
 ## 13. Pendientes
+
+> Ver `docs/arquitectura-produccion-vps.md` y plan `docs/superpowers/plans/2026-08-13-migracion-vps-docker.md` para la migración al VPS (será completada en Task 10).
 
 - [ ] **Urgente:** Regenerar secreto Azure (`AZURE_CLIENT_SECRET` quedó expuesto en chat)
 - [x] **Bug UX (resuelto):** un ítem que aparece en más de una fila del preview (ej. mismo ítem en Jujuy y en Salta) no agrupaba las filas — si el usuario editaba el contrato en una fila y no en la otra, la fila no editada se cargaba con el contrato del maestro en vez del elegido. `carga.py` y el resto del backend funcionaban correctamente; el problema era que `editarContrato()` en `upload.html` solo tocaba la fila editada. Solución: al cambiar el contrato de una fila, se aplica automáticamente a todas las filas con el mismo `item_codigo` en el preview.
