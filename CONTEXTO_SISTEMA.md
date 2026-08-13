@@ -26,6 +26,12 @@ Portal web interno para que **Serytec** cargue, valide y analice las certificaci
 | Deploy frontend | VPS propio — estáticos por Nginx. Respaldo: Netlify |
 | Repo | https://github.com/Gerorios/portalCertificaciones_BK |
 
+**URLs producción:**
+- Backend: `https://portalcertificaciones-bk.onrender.com`
+- Frontend: `https://portalcertificaciones.netlify.app`
+
+**UptimeRobot** pinguea `/health` cada 5 min para mantener el backend activo.
+
 **URL producción (VPS, principal):** `https://certificaciones.serytec.com.ar`
 (las URLs de Render/Netlify quedan como respaldo)
 
