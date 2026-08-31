@@ -156,6 +156,7 @@ async def confirmar(
     filas_ok = filtrar_cargables(candidatas, provincias_validas=provincias_validas)
     for f in filas_ok:
         f["tiene_error"] = False
+        anotar_contrato_final(db, f)
     contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
 
     for k in contratos_cargados:
