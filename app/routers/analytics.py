@@ -262,15 +262,24 @@ def provincias_analytics(
     return [r[0] for r in rows]
 
 
+def contratos_visibles(current, todos: list[str]) -> list[str]:
+    """Jefe: solo sus K (en el orden del maestro); admin/gerente: todos."""
+    if current.rol == "jefe":
+        propios = {k.upper() for k in current.contratos_list}
+        return [k for k in todos if k.upper() in propios]
+    return todos
+
+
 @router.get("/estado-cargas")
 def estado_cargas(
-    _: Usuario = Depends(require_gerente_or_admin),
+    current: Usuario = Depends(require_analytics),
     db: Session = Depends(get_db),
 ):
     contratos_rows = db.execute(text(
         "SELECT codigo_k FROM dim_contrato ORDER BY codigo_k"
     )).fetchall()
     todos_contratos = [r[0] for r in contratos_rows]
+    todos_contratos = contratos_visibles(current, todos_contratos)
 
     cargas = db.execute(text("""
         SELECT cl.contrato, cl.periodo, cl.usuario_nombre,
@@ -280,11 +289,12 @@ def estado_cargas(
         ORDER BY cl.periodo DESC, cl.contrato
     """)).fetchall()
 
+    visibles = set(todos_contratos)
     cargados = {}
     for r in cargas:
         d = dict(r._mapping)
         for k in [x.strip() for x in (d["contrato"] or "").split(",")]:
-            if not k:
+            if not k or k not in visibles:
                 continue
             key = f"{k}__{d['periodo']}"
             if key not in cargados:
