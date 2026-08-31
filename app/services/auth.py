@@ -67,16 +67,18 @@ def principal_desde_token_horas(payload: dict) -> PrincipalHoras:
     )
 
 def decode_any_token(token: str) -> dict:
-    """Prueba primero el secret del portal (legacy), después el de Horas."""
+    """Prueba primero el secret del portal (legacy); el de Horas solo si está configurado."""
     try:
         return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
     except JWTError:
         pass
-    try:
-        return jwt.decode(token, settings.horas_jwt_secret, algorithms=["HS256"])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Token inválido o expirado",
-                            headers={"WWW-Authenticate": "Bearer"})
+    if settings.horas_jwt_secret:
+        try:
+            return jwt.decode(token, settings.horas_jwt_secret, algorithms=["HS256"])
+        except JWTError:
+            pass
+    raise HTTPException(status_code=401, detail="Token inválido o expirado",
+                        headers={"WWW-Authenticate": "Bearer"})
 
 def get_usuario_by_email(db: Session, email: str) -> Optional[Usuario]:
     return db.query(Usuario).filter(
@@ -94,7 +96,7 @@ def authenticate(db: Session, email: str, password: str) -> Optional[Usuario]:
 def get_current_user(
     token: str = Depends(oauth2),
     db: Session = Depends(get_db),
-) -> Usuario:
+) -> "Usuario | PrincipalHoras":
     payload = decode_any_token(token)
     if "cuil" in payload:
         return principal_desde_token_horas(payload)

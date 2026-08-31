@@ -37,3 +37,37 @@ def test_sin_claim_cert_es_403():
 def test_decode_any_prueba_portal_y_luego_horas():
     payload = auth_mod.decode_any_token(token_horas({"nivel": "admin", "ks": [], "inc": True}))
     assert payload["cuil"] == "20-1"
+
+def test_horas_jwt_secret_vacio_rechaza_token_forjado(monkeypatch):
+    """Con HORAS_JWT_SECRET sin configurar, un token firmado con clave vacía
+    (forjable por cualquiera) NO debe ser aceptado, aunque declare cert admin."""
+    monkeypatch.setattr(auth_mod.settings, "horas_jwt_secret", "", raising=False)
+    token_forjado = jwt.encode(
+        {"cuil": "1", "email": "atacante@x.com", "rol": "Admin",
+         "cert": {"nivel": "admin", "ks": [], "inc": True}},
+        "", algorithm="HS256",
+    )
+    with pytest.raises(HTTPException) as e:
+        auth_mod.decode_any_token(token_forjado)
+    assert e.value.status_code == 401
+
+def test_check_contrato_access_sigue_estricto_para_gerente_sin_contratos():
+    """check_contrato_access no cambia: un gerente sin el contrato en su lista
+    sigue recibiendo 403 (la excepción para /detalle vive en el endpoint,
+    que salta este check cuando current.rol == 'gerente', no acá)."""
+    gerente = auth_mod.PrincipalHoras(nombre="g", rol="gerente", contratos_list=[])
+    with pytest.raises(HTTPException) as e:
+        auth_mod.check_contrato_access(gerente, "K6")
+    assert e.value.status_code == 403
+
+def test_decode_any_con_ambos_secrets_configurados_rechaza_tercer_secret():
+    """Con secret del portal y de Horas configurados, un token firmado con un
+    tercer secret desconocido debe ser rechazado (no falsear ninguno de los dos)."""
+    token_otro = jwt.encode(
+        {"cuil": "1", "email": "x@x.com", "rol": "Admin",
+         "cert": {"nivel": "admin", "ks": [], "inc": True}},
+        "otro-secret-desconocido", algorithm="HS256",
+    )
+    with pytest.raises(HTTPException) as e:
+        auth_mod.decode_any_token(token_otro)
+    assert e.value.status_code == 401
