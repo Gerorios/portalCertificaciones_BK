@@ -133,7 +133,7 @@ garantizado, no puede haber preview y carga en desacuerdo):
 1. `contrato_editado` (usuario lo cambió en el preview) → máxima prioridad
 2. Contrato del maestro de ítems (`dim_item`) — **manda sobre el del archivo aunque difieran**;
    si el ítem está en varios contratos del maestro, se prefiere el K del archivo si coincide
-   con alguno de ellos, si no el primero en orden determinista
+   con alguno de ellos, si no el primero en orden determinista (por `id_item`)
 3. Fallback: contrato del archivo, solo si el ítem no está en el maestro
 
 El preview anota `contrato` (K final), `contrato_archivo` (K original del archivo, siempre
@@ -431,7 +431,8 @@ Plan: `docs/superpowers/plans/2026-08-31-preview-cantidad-cero-contrato-maestro.
   - Frontend (`pages/upload.html`): eliminada `_resolverContratosDesdeDB` (la resolución de
     contrato queda 100% en el backend); agregado el aviso de reasignación.
 - **Decisiones del usuario**: el maestro de ítems manda sobre el contrato del archivo,
-  incluso si difieren; una fila con cantidad 0 no se ve en el preview ni se puede cargar.
+  incluso si difieren; una fila con cantidad 0 no se carga nunca; en el preview solo se ve
+  si trae total con plata (anomalía a corregir), el resto se oculta.
 - **Archivos tocados**:
   - Backend: `app/services/validacion.py`, `app/services/carga.py`,
     `app/routers/certificaciones.py`, `tests/test_validacion.py`,
