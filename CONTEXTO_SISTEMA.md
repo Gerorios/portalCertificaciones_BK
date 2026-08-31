@@ -380,3 +380,19 @@ repuntar UptimeRobot.
   correr solo con OK explícito. Probado por el usuario en local: funciona bien.
 - **Estado**: commiteado y pusheado en `desarollo`; deploy al VPS pendiente de PR + merge
   a `main` (flujo nuevo) y del backfill.
+
+### 2026-08-31 — PR + merge a `main`, redeploy al VPS y baja de la rama `desarollo`
+
+- **PRs mergeados** (pedido del usuario): backend
+  [BK #47](https://github.com/Gerorios/portalCertificaciones_BK/pull/47) (migración VPS +
+  fixes PGN K12 y mensaje de duplicados; 36/36 tests verdes antes del merge) y frontend
+  [FE #30](https://github.com/Gerorios/portalCertificaciones_FE/pull/30) (api.js multi-entorno).
+- **Redeploy en el VPS**: ambos clones (`/var/www/PortalCertificaciones_back` y `_front`)
+  **cambiados de `desarollo` a `main`** — los deploys futuros son `git pull` de `main`.
+  Backend reconstruido (`docker compose up -d --build`); verificado `/health` 200 y
+  portal 200 en `https://certificaciones.serytec.com.ar`.
+- **Rama `desarollo` eliminada** (local y remota, en ambos repos) a pedido del usuario.
+  Para el próximo ciclo de trabajo: crear la rama de desarrollo desde `main`.
+- **Sigue pendiente**: backfill de `ptos_gasnor` (`docs/sql/2026-08-14-backfill-ptos-gasnor.sql`,
+  solo con OK explícito — BD compartida dev/prod), rotar `AZURE_CLIENT_SECRET` si no se hizo,
+  y repuntar UptimeRobot.

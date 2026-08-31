@@ -46,7 +46,7 @@ VPS 179.198.99.30 (Ubuntu 24.04, Hostinger KVM 2)
 │
 ├── Docker
 │   └── portal-certificaciones-back           (Python 3.11 + poppler + FastAPI, 127.0.0.1:8000)
-│       repo: /var/www/PortalCertificaciones_back  (rama `desarollo`)
+│       repo: /var/www/PortalCertificaciones_back  (rama `main` desde 2026-08-31)
 │       .env: /var/www/PortalCertificaciones_back/.env  (NO commiteado)
 │
 └── /var/www/PortalCertificaciones_front      (clon del repo FE, servido por Nginx)
