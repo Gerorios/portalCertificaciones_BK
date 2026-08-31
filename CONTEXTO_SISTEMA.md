@@ -437,8 +437,9 @@ Plan: `docs/superpowers/plans/2026-08-31-preview-cantidad-cero-contrato-maestro.
     `app/routers/certificaciones.py`, `tests/test_validacion.py`,
     `tests/test_resolver_contrato.py` (nuevo).
   - Frontend: `pages/upload.html`.
-  - Ver también §5 (flujo de carga y resolución de contrato) y §13, actualizados para no
-    dejar la regla vieja de plantilla ni la vieja prioridad de resolución contradiciendo esto.
+  - Ver también §5 (flujo de carga y resolución de contrato), actualizado para no dejar la
+    vieja prioridad de resolución de contrato contradiciendo esto (era la única sección que
+    describía la regla vieja; §13 no la mencionaba).
 - **Tests**: suite completa `python -m pytest -q` → 50 passed.
 - **Estado**: commiteado en ambos repos en la rama `fix/preview-cantidad-cero-contrato-maestro`
   (no en `desarollo` ni `main`). Pendiente: prueba del usuario en local con datos reales →
