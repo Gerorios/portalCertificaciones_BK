@@ -8,7 +8,6 @@ Tests de las reglas de validación de filas (CONTEXT.md):
 - Fila excluida: el usuario la destildó → no se carga.
 """
 from app.services.validacion import (
-    tiene_contenido_monetario,
     es_fila_plantilla,
     revalidar_fila,
     filtrar_visibles_preview,
@@ -32,12 +31,6 @@ def fila_base(**kw):
 
 # ── contenido monetario / plantilla ──────────────────────────
 
-def test_fila_con_total_tiene_contenido_monetario():
-    assert tiene_contenido_monetario(fila_base(cantidades=None))
-
-def test_fila_solo_unitario_tiene_contenido_monetario():
-    assert tiene_contenido_monetario(fila_base(total_mes=None))
-
 def test_fila_sin_montos_ni_cantidad_es_plantilla():
     f = fila_base(cantidades=None, precio_unitario=None, total_mes=None)
     assert es_fila_plantilla(f)
@@ -48,6 +41,27 @@ def test_fila_con_total_no_es_plantilla_aunque_falte_cantidad():
 def test_fila_cantidad_cero_sin_montos_es_plantilla():
     f = fila_base(cantidades="0", precio_unitario=None, total_mes=None)
     assert es_fila_plantilla(f)
+
+def test_fila_cantidad_cero_con_solo_unitario_es_plantilla():
+    # Ruido de catálogo Naturgy: unitario cargado, nada certificado → se oculta
+    f = fila_base(cantidades="0", total_mes=None)
+    assert es_fila_plantilla(f)
+
+def test_fila_sin_cantidad_con_solo_unitario_es_plantilla():
+    f = fila_base(cantidades=None, total_mes=None)
+    assert es_fila_plantilla(f)
+
+def test_fila_cantidad_cero_con_total_cero_es_plantilla():
+    f = fila_base(cantidades="0", total_mes="0.00")
+    assert es_fila_plantilla(f)
+
+def test_fila_cantidad_cero_con_total_con_plata_no_es_plantilla():
+    # Anomalía real: hay plata declarada sin cantidad → debe verse (con error)
+    f = fila_base(cantidades="0")
+    assert not es_fila_plantilla(f)
+
+def test_fila_con_cantidad_y_total_no_es_plantilla():
+    assert not es_fila_plantilla(fila_base())
 
 
 # ── revalidación (el flag nunca se congela) ──────────────────
@@ -99,13 +113,15 @@ def test_provincia_invalida_no_es_cargable():
 # ── visibilidad en preview ───────────────────────────────────
 
 def test_preview_muestra_incompleta_y_oculta_plantilla():
-    incompleta = fila_base(cantidades=None)                       # hay plata → se ve
+    incompleta = fila_base(cantidades=None)                        # total con plata → se ve
+    catalogo   = fila_base(cantidades="0", total_mes=None)         # solo unitario → se oculta
     plantilla  = fila_base(cantidades=None, precio_unitario=None,
-                           total_mes=None)                        # ruido → se oculta
+                           total_mes=None)                         # ruido → se oculta
     normal     = fila_base()
-    visibles = filtrar_visibles_preview([incompleta, plantilla, normal])
+    visibles = filtrar_visibles_preview([incompleta, catalogo, plantilla, normal])
     assert incompleta in visibles
     assert normal in visibles
+    assert catalogo not in visibles
     assert plantilla not in visibles
 
 

@@ -50,9 +50,10 @@ async def preview(
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
-    # Se muestran todas las filas salvo las de plantilla (sin cantidad ni montos).
-    # Las incompletas (con plata pero sin cantidad/provincia) quedan visibles
-    # con error para que el usuario las corrija — nunca se ocultan.
+    # Se muestran todas las filas salvo las de plantilla (sin cantidad y sin
+    # total con plata — el catálogo con unitario y cantidad 0 se oculta).
+    # Las filas con total pero sin cantidad/provincia quedan visibles con
+    # error para que el usuario las corrija — nunca se ocultan.
     filas_visibles = filtrar_visibles_preview(resultado["filas"])
 
     provincias_validas = [
