@@ -22,8 +22,8 @@ Portal web interno para que **Serytec** cargue, valide y analice las certificaci
 |------|-----------|
 | Backend | FastAPI + Python 3.11, SQLAlchemy, MySQL |
 | Frontend | HTML/JS puro, CSS variables, Chart.js 4.4 |
-| Deploy backend | Render.com (plan gratuito, duerme tras 15 min) |
-| Deploy frontend | Netlify |
+| Deploy backend | VPS propio 179.198.99.30 — Docker (`python:3.11-slim`), ver `docs/arquitectura-produccion-vps.md`. Respaldo: Render.com free |
+| Deploy frontend | VPS propio — estáticos por Nginx. Respaldo: Netlify |
 | Repo | https://github.com/Gerorios/portalCertificaciones_BK |
 
 **URLs producción:**
@@ -31,6 +31,9 @@ Portal web interno para que **Serytec** cargue, valide y analice las certificaci
 - Frontend: `https://portalcertificaciones.netlify.app`
 
 **UptimeRobot** pinguea `/health` cada 5 min para mantener el backend activo.
+
+**URL producción (VPS, principal):** `https://certificaciones.serytec.com.ar`
+(las URLs de Render/Netlify quedan como respaldo)
 
 ---
 
@@ -59,14 +62,13 @@ hoja_origen, archivo_origen, cargado_por
 > **Importante:** `ptos_gasnor` se guarda desde el archivo (certificación), NO desde el maestro.
 > El cálculo de PGN en analytics usa `fc.ptos_gasnor` para coincidir con Power BI.
 
-### Índices pendientes de aplicar
+### Índices (aplicados 2026-08-13)
+
+`idx_contrato`, `idx_item`, `idx_provincia` (y también `idx_tipo`, `idx_origen`) ya existían en `fact_certificaciones`; solo hizo falta crear `idx_fecha`. Ver `docs/sql/2026-08-13-indices-fact-certificaciones.sql`.
 
 ```sql
 ALTER TABLE fact_certificaciones
-    ADD INDEX idx_contrato (id_contrato),
-    ADD INDEX idx_fecha (fecha),
-    ADD INDEX idx_item (id_item),
-    ADD INDEX idx_provincia (id_provincia);
+    ADD INDEX idx_fecha (fecha);
 ```
 
 ### Query para insertar ítem en el maestro
@@ -228,12 +230,15 @@ Esto resuelve el error 500 cuando el frontend envía las provincias en mayúscul
 
 ---
 
-## 9. Variables de entorno (Render)
+## 9. Variables de entorno
+
+> Desde 2026-08-13 las variables de producción viven en `/var/www/PortalCertificaciones_back/.env`
+> del VPS (chmod 600, NO commiteado). Render conserva una copia como respaldo.
 
 ```
 DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 SECRET_KEY, ALGORITHM=HS256
-ALLOWED_ORIGINS=https://portalcertificaciones.netlify.app
+ALLOWED_ORIGINS=https://certificaciones.serytec.com.ar,https://portalcertificaciones.netlify.app
 AZURE_TENANT_ID=08487b0c-70cd-473c-80da-193f2f00be92
 AZURE_CLIENT_ID=1b3d7b6d-23c8-412b-b223-d5188e4df9c6
 AZURE_CLIENT_SECRET=⚠️ REGENERAR — quedó expuesto
@@ -245,6 +250,11 @@ OPENAI_API_KEY   (disponible pero parser PDF IA deprecado — usar parser_pdf.py
 
 ## 10. Deploy
 
+### VPS propio (principal desde 2026-08)
+
+Ver `docs/arquitectura-produccion-vps.md` (mapa completo, operación diaria y decisiones)
+y el plan `docs/superpowers/plans/2026-08-13-migracion-vps-docker.md`.
+
 ### Render (backend)
 
 - `.python-version` = 3.11.9
@@ -254,7 +264,7 @@ OPENAI_API_KEY   (disponible pero parser PDF IA deprecado — usar parser_pdf.py
 
 ### Netlify (frontend)
 
-- `js/api.js`: `const API = "https://portalcertificaciones-bk.onrender.com"`
+- `js/api.js` es multi-entorno desde 2026-08-13: localhost → :8000, `*.netlify.app` → Render, cualquier otro host → mismo origen + `/api`.
 - Paleta: `--primario: #DCA028`, `--secundario: #4A4A4A`
 
 ---
@@ -281,19 +291,24 @@ Certificaciones / K8 / 2026-05 / archivo.xlsx
 | PDF K9SUR campos vacíos | pdfplumber parte filas en dos líneas | Herencia de contexto en filas huérfanas |
 | K12 Excel no detectado | Header dice "ITEM" sin S | Agregado a _encontrar_header_idx |
 | Contrato editado en preview no impacta | carga.py ignoraba contrato_editado | Verificar campo contrato_editado en fila |
+| Lentitud general (arranque en frío) | Render free duerme tras 15 min | Migrado al VPS propio 2026-08-13 (ver docs/arquitectura-produccion-vps.md) |
 
 ---
 
 ## 13. Pendientes
 
-- [ ] **Urgente:** Regenerar secreto Azure (`AZURE_CLIENT_SECRET` quedó expuesto en chat)
+> Ver `docs/arquitectura-produccion-vps.md` y plan `docs/superpowers/plans/2026-08-13-migracion-vps-docker.md` para la migración al VPS (será completada en Task 10).
+
+- [ ] **Urgente:** Regenerar secreto Azure (`AZURE_CLIENT_SECRET` quedó expuesto en chat) — pendiente; programado como Task 9 de la migración al VPS
 - [x] **Bug UX (resuelto):** un ítem que aparece en más de una fila del preview (ej. mismo ítem en Jujuy y en Salta) no agrupaba las filas — si el usuario editaba el contrato en una fila y no en la otra, la fila no editada se cargaba con el contrato del maestro en vez del elegido. `carga.py` y el resto del backend funcionaban correctamente; el problema era que `editarContrato()` en `upload.html` solo tocaba la fila editada. Solución: al cambiar el contrato de una fila, se aplica automáticamente a todas las filas con el mismo `item_codigo` en el preview.
 - [ ] **UX:** el mensaje de error al re-subir un archivo duplicado (`certificaciones.py:126`) le dice a cualquier usuario "eliminá la carga anterior desde el historial", pero solo el admin puede eliminar cargas (decisión confirmada: se mantiene admin-only). Corregir el texto para que el jefe sepa que debe pedírselo a un admin, en vez de sugerir una acción que no puede hacer.
 - [ ] **Bug:** cuando el archivo no trae la columna `ptos_gasnor` (ej. K12), `carga.py` guarda `NULL` y el PGN queda en 0 en analytics (`COALESCE(fc.ptos_gasnor, 0)`). Debería, en ese caso, tomar `ptos_gasnor` del maestro (`dim_item`) y multiplicarlo por `cantidades`. Hoy no hay ningún fallback a `dim_item` en `carga.py` ni en `parser.py`.
-- [ ] Aplicar índices en `fact_certificaciones`
-- [ ] Dominio propio para el backend (evita bloqueo en redes Naturgy)
-- [ ] Upgrade Render a plan Starter ($7/mes) para eliminar el sleep
+- [x] Aplicar índices en `fact_certificaciones` — hecho 2026-08-13; solo faltaba `idx_fecha` (los otros ya existían), ver docs/sql/2026-08-13-indices-fact-certificaciones.sql
+- [x] Dominio propio para el backend — hecho 2026-08-13: https://certificaciones.serytec.com.ar (VPS propio)
+- [x] ~~Upgrade Render a plan Starter~~ — innecesario: migrado al VPS propio 2026-08-13, sin costo mensual extra
 - [x] Verificar que `sidebar.js` tiene link "analytics" para gerente — confirmado, ya está (`sidebar.js:13`, roles `["admin","gerente"]`)
+- [ ] Repuntar el monitor de UptimeRobot a `https://certificaciones.serytec.com.ar/api/health` (ahora como monitoreo real, ya no anti-sleep)
+- [ ] Decidir si Render/Netlify se dan de baja o quedan como respaldo permanente
 
 ---
 
@@ -330,3 +345,38 @@ Certificaciones / K8 / 2026-05 / archivo.xlsx
    directo en vez de var(--verde). */
 --verde:         var(--primario)
 ```
+
+---
+
+## 16. Registro de sesiones de desarrollo
+
+> Regla de trabajo desde 2026-08-14 (pedido del usuario): cada sesión sobre el portal
+> se documenta acá en detalle, y **nada se deploya sin PR** (`desarollo` → `main`)
+> con sus commits correspondientes.
+
+### 2026-08-13 — Migración al VPS propio (backend dockerizado)
+
+Ejecutada completa; detalle en `docs/arquitectura-produccion-vps.md` y el plan
+`docs/superpowers/plans/2026-08-13-migracion-vps-docker.md`. Resumen: backend en Docker
+(`python:3.11-slim`, **1 worker** por el cache de preview en memoria — no escalar sin sacar
+el cache del proceso), frontend estático por Nginx, `https://certificaciones.serytec.com.ar`
+con SSL, índice `idx_fecha` aplicado (los otros 3 del §3 ya existían), `js/api.js`
+multi-entorno. Render/Netlify quedan de respaldo. Pendientes: rotar `AZURE_CLIENT_SECRET`,
+repuntar UptimeRobot.
+
+### 2026-08-14 — Fixes del backlog: PGN de K12 y mensaje de duplicados (commit `872fd45`)
+
+- **`app/services/carga.py`** — nueva `_ptos_gasnor_con_fallback(db, valor_archivo, id_item)`:
+  si el archivo no trae `ptos_gasnor` (None o "", caso K12), toma el del maestro `dim_item`;
+  si lo trae, se respeta el del archivo (criterio Power BI, §3). Usada en el INSERT de
+  `cargar_certificaciones`. Resuelve el bug "PGN queda en 0" del §13.
+- **`app/routers/certificaciones.py`** — nueva `mensaje_archivo_duplicado(archivo, rol)`:
+  el mensaje de archivo duplicado del confirmar ahora distingue rol (admin: "eliminá desde
+  el historial"; jefe/gerente: "pedile a un administrador"). Resuelve el ítem UX del §13.
+- **Tests (TDD)**: `tests/test_carga_ptos_gasnor.py` (5 tests, fake db) y
+  `tests/test_mensaje_duplicado.py` (3 tests). Suite completa: 36/36 verde.
+- **Backfill del histórico**: `docs/sql/2026-08-14-backfill-ptos-gasnor.sql` preparado y
+  **NO ejecutado** — ⚠️ la BD del portal es la misma en dev y producción (`testing`);
+  correr solo con OK explícito. Probado por el usuario en local: funciona bien.
+- **Estado**: commiteado y pusheado en `desarollo`; deploy al VPS pendiente de PR + merge
+  a `main` (flujo nuevo) y del backfill.
