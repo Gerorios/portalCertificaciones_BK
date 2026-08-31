@@ -8,7 +8,7 @@ from app.database import get_db
 from app.models import Usuario, CargaLog
 from app.services.auth import get_current_user, check_contrato_access
 from app.services.parser import parsear_bytes
-from app.services.carga import cargar_certificaciones
+from app.services.carga import cargar_certificaciones, anotar_contrato_final
 from app.services.cache import guardar, recuperar, limpiar
 from app.services.parser_pdf import parsear_pdf_bytes
 from app.services.validacion import (
@@ -64,6 +64,8 @@ async def preview(
 
     items_existentes: dict[str, bool] = {}
     for fila in filas_visibles:
+        anotar_contrato_final(db, fila)
+
         codigo = (fila.get("item_codigo") or "").replace(".", ",")
         if codigo not in items_existentes:
             items_existentes[codigo] = db.execute(text("""
