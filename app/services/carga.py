@@ -1,9 +1,11 @@
 """
 Servicio de carga de certificaciones a la base de datos.
 
-Lógica de resolución de contrato:
+Lógica de resolución de contrato (regla única, ver `resolver_contrato_final`):
 - Si el usuario editó el contrato en el preview → usar ese (máxima prioridad)
-- Si no → usar el contrato del maestro de ítems (dim_item)
+- Si no → usar el contrato del maestro de ítems (dim_item); si el ítem está
+  en varios contratos, se prefiere el del archivo si coincide, si no el
+  primero en orden determinista
 - Fallback → contrato del archivo solo si el ítem no existe en el maestro
 """
 from sqlalchemy.orm import Session
@@ -41,34 +43,60 @@ def _id_contrato_por_k(db: Session, codigo_k: str) -> int | None:
     return row[0] if row else None
 
 
-def _id_contrato_desde_maestro(db: Session, item_codigo: str) -> int | None:
-    """Devuelve el id_contrato asignado al ítem en dim_item."""
-    row = db.execute(text("""
-        SELECT di.id_contrato FROM dim_item di
+def _contratos_maestro(db: Session, item_codigo: str) -> list[str]:
+    """Códigos K de todos los contratos donde el maestro tiene este ítem,
+    en orden determinista."""
+    if not item_codigo:
+        return []
+    rows = db.execute(text("""
+        SELECT dc.codigo_k
+        FROM dim_item di
+        JOIN dim_contrato dc ON di.id_contrato = dc.id_contrato
         WHERE REPLACE(di.item_codigo, '.', ',') = :item
-        LIMIT 1
-    """), {"item": item_codigo.replace(".", ",")}).fetchone()
-    return row[0] if row else None
+        ORDER BY di.id_item
+    """), {"item": item_codigo.replace(".", ",")}).fetchall()
+    return [r[0] for r in rows]
 
 
-def _resolver_id_contrato(db: Session, item_codigo: str, contrato_k: str, usuario_edito: bool) -> int | None:
+def resolver_contrato_final(
+    db: Session,
+    item_codigo: str,
+    contrato_archivo: str | None,
+    contrato_editado: str | None = None,
+) -> tuple[str | None, str]:
     """
-    Resuelve id_contrato según prioridad:
-    1. Si el usuario editó el contrato en el preview → usar ese K directamente
-    2. Si no → usar el contrato del maestro de ítems
-    3. Fallback → contrato del archivo si el ítem no existe en el maestro
+    Regla única de resolución de contrato (preview y carga usan ESTA función):
+    1. editado por el usuario en el preview → gana siempre
+    2. maestro (dim_item); si el ítem está en varios contratos, se prefiere
+       el del archivo si coincide, si no el primero en orden determinista
+    3. archivo, solo si el ítem no está en el maestro
+    Devuelve (codigo_k | None, fuente) con fuente en {"editado","maestro","archivo"}.
     """
-    if usuario_edito:
-        # El usuario eligió explícitamente este contrato — respetarlo siempre
-        return _id_contrato_por_k(db, contrato_k)
+    if contrato_editado:
+        return contrato_editado, "editado"
+    ks = _contratos_maestro(db, item_codigo)
+    if ks:
+        if contrato_archivo in ks:
+            return contrato_archivo, "maestro"
+        return ks[0], "maestro"
+    return (contrato_archivo or None), "archivo"
 
-    # Sin edición: usar el contrato del maestro
-    id_desde_maestro = _id_contrato_desde_maestro(db, item_codigo)
-    if id_desde_maestro:
-        return id_desde_maestro
 
-    # Fallback: contrato del archivo
-    return _id_contrato_por_k(db, contrato_k)
+def anotar_contrato_final(db: Session, fila: dict) -> dict:
+    """Anota en la fila el contrato que efectivamente se va a cargar.
+    Idempotente: `contrato_archivo` preserva siempre el K original del archivo."""
+    if "contrato_archivo" not in fila:
+        fila["contrato_archivo"] = fila.get("contrato") or ""
+    k_final, fuente = resolver_contrato_final(
+        db,
+        fila.get("item_codigo") or "",
+        fila["contrato_archivo"],
+        fila.get("contrato_editado"),
+    )
+    fila["contrato"] = k_final or ""
+    fila["contrato_fuente"] = fuente
+    fila["contrato_del_maestro"] = k_final if fuente == "maestro" else None
+    return fila
 
 
 def _ptos_gasnor_con_fallback(db: Session, valor_archivo, id_item: int):
@@ -109,16 +137,20 @@ def cargar_certificaciones(
             omitidas += 1
             continue
 
-        # ¿El usuario editó el contrato manualmente en el preview?
-        usuario_edito = "contrato_editado" in fila and bool(fila["contrato_editado"])
-        contrato_k    = fila["contrato_editado"] if usuario_edito else fila["contrato"]
+        # Regla única de resolución (la misma que vio el usuario en el preview)
+        k_final, _fuente = resolver_contrato_final(
+            db,
+            fila["item_codigo"],
+            fila.get("contrato_archivo") or fila.get("contrato"),
+            fila.get("contrato_editado"),
+        )
 
-        id_item      = _resolver_id_item(db, fila["item_codigo"], contrato_k)
-        id_contrato  = _resolver_id_contrato(db, fila["item_codigo"], contrato_k, usuario_edito)
+        id_item      = _resolver_id_item(db, fila["item_codigo"], k_final or "")
+        id_contrato  = _id_contrato_por_k(db, k_final) if k_final else None
         id_provincia = _resolver_id_provincia(db, fila["provincia"])
 
         if not id_contrato:
-            errores.append({"fila": i, "mensaje": f"Contrato {contrato_k} no encontrado"})
+            errores.append({"fila": i, "mensaje": f"Contrato {k_final} no encontrado"})
             omitidas += 1
             continue
 
