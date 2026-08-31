@@ -35,6 +35,12 @@ Portal web interno para que **Serytec** cargue, valide y analice las certificaci
 **URL producción (VPS, principal):** `https://certificaciones.serytec.com.ar`
 (las URLs de Render/Netlify quedan como respaldo)
 
+**Frontend futuro (Unificación ERP, Etapa 1 — ver §16):** el módulo Certificaciones
+se está integrando dentro de la app de Horas (`https://misregistros.serytec.com.ar`),
+que consume este mismo backend FastAPI como API (`apiCert`, `NEXT_PUBLIC_CERT_API_URL`).
+Hasta que termine la migración, `certificaciones.serytec.com.ar` sigue sirviendo el
+frontend vanilla actual sin cambios — conviven las dos vías de acceso al mismo backend.
+
 ---
 
 ## 3. Base de datos
@@ -446,3 +452,53 @@ Plan: `docs/superpowers/plans/2026-08-31-preview-cantidad-cero-contrato-maestro.
   frontend :5500), mergeado vía PRs [BK #48](https://github.com/Gerorios/portalCertificaciones_BK/pull/48)
   y [FE #31](https://github.com/Gerorios/portalCertificaciones_FE/pull/31), deployado al VPS
   (health y portal 200) y rama del fix eliminada en ambos repos.
+
+### 2026-08-31 — Unificación ERP Etapa 1: módulo Certificaciones en la app de Horas (ramas feat/erp-certificaciones-etapa1)
+
+Trabajo en 3 repos en paralelo, cada uno en la rama `feat/erp-certificaciones-etapa1`. Objetivo:
+que la app de Horas (`misregistros.serytec.com.ar`, dueña de la identidad de usuarios) incorpore
+un módulo Certificaciones que consume este mismo backend FastAPI, sin duplicar login.
+
+- **Qué se construyó, por repo:**
+  - **Portal backend** (este repo): acepta también un JWT firmado por Horas
+    (`HORAS_JWT_SECRET`, mismo secret HS256 que `JWT_SECRET` en Horas), con claims
+    `cuil`/`email`/`rol`/`cert`; mapeo cert→rol interno del portal (`PrincipalHoras`,
+    solo lectura: `nombre`, `rol` ya mapeado, `contratos_list`, `ver_incidencia`, `id=0`).
+    CORS ampliado en `app/main.py` para aceptar el origen de esa app (Etapa 1: Task 8).
+  - **Horas Backend**: modelos y CRUD de accesos al módulo (nivel `admin`/`carga`/`lectura`
+    + lista de contratos K + flag `incidencia`); claim `cert` sumado al JWT y al endpoint de
+    perfil; endpoint nuevo `GET /certificaciones/incidencia-mo` (suma de ambas quincenas por
+    contrato, con el sub-total de horas/montos sin contrato asignable en un bucket aparte,
+    `contratoId: null, codigo: 'Sin contrato asignable'`, excluido del agregado por código y
+    devuelto separado como `sinAsignar`; solo visible a `admin`/`lectura` o con flag
+    `incidencia`). Migración Prisma generada pero NO aplicada (se aplica en el deploy con
+    `migrate deploy`, documentado en `prisma/migrations/README.md`).
+  - **Horas Frontend**: sección Certificaciones dentro de la app (nav gateado por
+    `perfil.cert != null`), cliente HTTP `apiCert` (`NEXT_PUBLIC_CERT_API_URL`) apuntando al
+    portal backend, página Resumen (KPIs, tabla de incidencia con semáforo, card de
+    Presupuesto) y Analytics.
+- **Decisiones del usuario:**
+  - App única con **Horas como dueño de la identidad**: un solo login, el portal de
+    certificaciones no vuelve a emitir sesión propia para estos usuarios.
+  - **Accesos por concesión de admin**: nivel `admin`/`carga`/`lectura` + flag `incidencia`
+    independiente del nivel (alguien con `lectura` puede o no ver incidencia de MO).
+  - **Incidencia de mano de obra**: lo sin asignar a contrato va a un bucket aparte
+    (`sinAsignar`), nunca mezclado en el agregado por código de contrato — así no ensucia
+    el % de incidencia por contrato con horas que no se pudieron atribuir.
+  - **Umbral de alerta de incidencia = 30%**, hardcodeado en código del frontend
+    (`UMBRAL_INCIDENCIA_PCT` en `src/features/certificaciones/config.ts` de Horas FE) como
+    valor inicial acordado; UI de configuración por admin queda para una etapa posterior.
+- **Verificado hoy**: la base de datos del portal y la de Horas son **la misma instancia
+  física** (`191.101.235.7`, esquema `testing`) — confirmado antes de decidir cómo compartir
+  identidad/accesos entre ambas apps.
+- **Checklist de deploy pendiente** (nada de esto se ejecutó — queda para el usuario):
+  - Aplicar la migración Prisma pendiente en Horas Backend con `migrate deploy`.
+  - Setear `HORAS_JWT_SECRET` en el `.env` del portal (VPS) = mismo valor que `JWT_SECRET`
+    de Horas — a mano, nunca commiteado.
+  - Definir y configurar `NEXT_PUBLIC_CERT_API_URL` en Horas Frontend, o el proxy Nginx
+    same-origin alternativo (`location /certapi/` → `127.0.0.1:8000`) — decisión al deployar.
+  - Abrir y mergear los PRs de los 3 repos (portal, Horas Backend, Horas Frontend).
+- **Suites al cierre de la Etapa 1** (Task 8, corridas en local, nada deployado):
+  portal `python -m pytest -q` → 54 passed; Horas BE `npm test` → 297 passed (27 suites);
+  Horas FE `npm test` (Vitest, corrida única) → 523 passed (74 archivos), sin flakes.
+- **Estado**: pendiente de prueba del usuario → PRs de los 3 repos → deploy. Nada deployado.

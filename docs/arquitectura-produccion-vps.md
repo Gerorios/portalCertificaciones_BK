@@ -52,6 +52,47 @@ VPS 179.198.99.30 (Ubuntu 24.04, Hostinger KVM 2)
 └── /var/www/PortalCertificaciones_front      (clon del repo FE, servido por Nginx)
 ```
 
+## Mapa futuro: app unificada (Unificación ERP, Etapa 1 — en curso)
+
+> Ramas `feat/erp-certificaciones-etapa1` en los 3 repos, todavía sin deployar. Ver
+> `CONTEXTO_SISTEMA.md` §16, entrada 2026-08-31 "Unificación ERP Etapa 1".
+
+Etapa 1 agrega un módulo Certificaciones **dentro de la app de Horas**
+(`misregistros.serytec.com.ar`), que consume este mismo backend FastAPI como API —
+sin frontend propio nuevo, sin duplicar login (Horas es dueño de la identidad). El
+frontend vanilla actual (`certificaciones.serytec.com.ar`) **no se retira todavía**:
+convive con la app unificada hasta el final de la migración.
+
+```
+VPS 179.198.99.30 (Ubuntu 24.04, Hostinger KVM 2)
+│
+├── Nginx (host)
+│   ├── misregistros.serytec.com.ar/          → proxy → localhost:3000 (front Horas,
+│   │                                             incluye el módulo Certificaciones)
+│   ├── misregistros.serytec.com.ar/api/      → proxy → localhost:3001 (back Horas)
+│   ├── misregistros.serytec.com.ar/certapi/  → proxy → 127.0.0.1:8000 (back Portal) ⚠
+│   ├── certificaciones.serytec.com.ar/       → estáticos, SIN CAMBIOS (frontend vanilla)
+│   └── certificaciones.serytec.com.ar/api/   → proxy → localhost:8000 (back Portal,
+│                                                 mismo backend que consume misregistros)
+```
+
+`⚠` = decisión pendiente al deployar, ver Task 8: **proxy Nginx same-origin**
+(`/certapi/` → `127.0.0.1:8000`) como alternativa a CORS cross-origin puro. Mientras
+tanto el backend ya acepta el origen `https://misregistros.serytec.com.ar` (y
+`http://localhost:3000` en dev) vía CORS en `app/main.py`, así que la app unificada
+funciona sin el proxy aunque éste no se implemente de entrada.
+
+Ambos frontends (vanilla y unificado) pegan al **mismo** contenedor
+`portal-certificaciones-back` — no hay backend duplicado. Lo que cambia es sólo cómo
+se autentica cada uno: el vanilla sigue con el login propio del portal, la app
+unificada manda un JWT firmado por Horas (`HORAS_JWT_SECRET` = `JWT_SECRET` de Horas)
+que el portal valida además del suyo.
+
+Checklist de deploy de esta etapa (ninguno ejecutado): migración Prisma de Horas
+Backend con `migrate deploy`, `HORAS_JWT_SECRET` en el `.env` del portal en el VPS,
+`NEXT_PUBLIC_CERT_API_URL` (o el proxy `/certapi/`) en Horas Frontend, y los 3 PRs
+mergeados.
+
 ## Operación diaria
 
 | | Apps de Horas | Portal backend |

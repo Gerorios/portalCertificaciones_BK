@@ -16,9 +16,19 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# Orígenes de la config (.env / ALLOWED_ORIGINS) + los del módulo Certificaciones
+# dentro de la app unificada de Horas (Etapa 1 de la unificación ERP): el dominio
+# de producción de esa app y el dev server de Next. No reemplazan lo que ya
+# permite ALLOWED_ORIGINS, se suman.
+_erp_horas_origins = [
+    "https://misregistros.serytec.com.ar",
+    "http://localhost:3000",
+]
+allow_origins = list(dict.fromkeys(settings.origins_list + _erp_horas_origins))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.origins_list,
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
