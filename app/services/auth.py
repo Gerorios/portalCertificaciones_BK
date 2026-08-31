@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -40,6 +41,41 @@ def decode_token(token: str) -> dict:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+@dataclass
+class PrincipalHoras:
+    """Usuario autenticado con token de Horas — solo lectura en Etapa 1."""
+    nombre: str
+    rol: str                      # admin | gerente | jefe (ya mapeado)
+    contratos_list: list = field(default_factory=list)
+    ver_incidencia: bool = False
+    id: int = 0                   # sin fila en la BD del portal
+
+_NIVEL_A_ROL = {"admin": "admin", "lectura": "gerente", "carga": "jefe"}
+
+def principal_desde_token_horas(payload: dict) -> PrincipalHoras:
+    """Mapea el claim `cert` del token de Horas a un principal de lectura del portal."""
+    cert = payload.get("cert")
+    if not cert or cert.get("nivel") not in _NIVEL_A_ROL:
+        raise HTTPException(status_code=403, detail="Sin acceso al módulo Certificaciones")
+    return PrincipalHoras(
+        nombre=payload.get("email", ""),
+        rol=_NIVEL_A_ROL[cert["nivel"]],
+        contratos_list=[k.upper() for k in cert.get("ks", [])],
+        ver_incidencia=bool(cert.get("inc")),
+    )
+
+def decode_any_token(token: str) -> dict:
+    """Prueba primero el secret del portal (legacy), después el de Horas."""
+    try:
+        return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    except JWTError:
+        pass
+    try:
+        return jwt.decode(token, settings.horas_jwt_secret, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado",
+                            headers={"WWW-Authenticate": "Bearer"})
+
 def get_usuario_by_email(db: Session, email: str) -> Optional[Usuario]:
     return db.query(Usuario).filter(
         Usuario.email == email.lower(),
@@ -57,7 +93,9 @@ def get_current_user(
     token: str = Depends(oauth2),
     db: Session = Depends(get_db),
 ) -> Usuario:
-    payload = decode_token(token)
+    payload = decode_any_token(token)
+    if "cuil" in payload:
+        return principal_desde_token_horas(payload)
     email: str = payload.get("sub")
     if not email:
         raise HTTPException(status_code=401, detail="Token sin usuario")
