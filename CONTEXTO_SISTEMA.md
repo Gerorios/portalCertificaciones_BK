@@ -113,18 +113,33 @@ app/
 
 1. **Subir archivo** (.xlsx/.xls/.xlsm/.pdf) → backend parsea, devuelve `cache_id`
 2. **Seleccionar hojas** → chips de hojas; jefe solo ve las de sus contratos K (las demás con 🔒)
-3. **Preview editable** — tabla con columnas editables:
-   - **Contrato** — default del maestro de ítems, editable (se guarda como `contrato_editado`)
+3. **Preview editable** — filas de plantilla (sin cantidad y sin total con plata) se ocultan
+   del preview (`app/services/validacion.py::es_fila_plantilla`; el unitario solo no cuenta
+   como contenido). Tabla con columnas editables:
+   - **Contrato** — default resuelto por `resolver_contrato_final` (el maestro manda sobre el
+     archivo), editable (se guarda como `contrato_editado`). Si el maestro reasigna el K del
+     archivo, el preview muestra el aviso «archivo: K11 → K6»
    - **Provincia** — select, obligatorio antes de confirmar
    - **Cantidad** — editable
    - **$ Total** — editable
 4. **Confirmar** → envía `cache_id` + `hojas` + `filas_editadas`; valida duplicados por nombre de archivo
 
-### Prioridad de resolución de contrato en `carga.py`
+### Resolución de contrato — el maestro es la fuente única
+
+`resolver_contrato_final` / `anotar_contrato_final` en `app/services/carga.py` es la ÚNICA
+función que decide el K de una fila; la usan tanto el preview como la carga (determinismo
+garantizado, no puede haber preview y carga en desacuerdo):
 
 1. `contrato_editado` (usuario lo cambió en el preview) → máxima prioridad
-2. Contrato del maestro de ítems (`dim_item.id_contrato`)
-3. Fallback: contrato del archivo
+2. Contrato del maestro de ítems (`dim_item`) — **manda sobre el del archivo aunque difieran**;
+   si el ítem está en varios contratos del maestro, se prefiere el K del archivo si coincide
+   con alguno de ellos, si no el primero en orden determinista (por `id_item`)
+3. Fallback: contrato del archivo, solo si el ítem no está en el maestro
+
+El preview anota `contrato` (K final), `contrato_archivo` (K original del archivo, siempre
+preservado), `contrato_fuente` (`"editado"|"maestro"|"archivo"`) y `contrato_del_maestro`.
+`confirmar` recalcula sobre el K final (no confía en lo que mandó el frontend) para chequear
+permisos del jefe y loguear correctamente.
 
 ---
 
@@ -396,3 +411,37 @@ repuntar UptimeRobot.
 - **Sigue pendiente**: backfill de `ptos_gasnor` (`docs/sql/2026-08-14-backfill-ptos-gasnor.sql`,
   solo con OK explícito — BD compartida dev/prod), rotar `AZURE_CLIENT_SECRET` si no se hizo,
   y repuntar UptimeRobot.
+
+### 2026-08-31 — Fix: preview sin cantidad 0 + contrato del maestro como fuente única (rama fix/preview-cantidad-cero-contrato-maestro)
+
+Plan: `docs/superpowers/plans/2026-08-31-preview-cantidad-cero-contrato-maestro.md`.
+
+- **Qué cambió**:
+  - Regla de plantilla nueva: una fila sin cantidad (None o 0) **y** sin total con plata
+    se oculta del preview (ruido de catálogo); el unitario solo, sin cantidad, no cuenta
+    como contenido certificado. `app/services/validacion.py::es_fila_plantilla`.
+  - Regla única de resolución de contrato: `resolver_contrato_final` /
+    `anotar_contrato_final` en `app/services/carga.py` — editado > maestro > archivo,
+    determinista, preferencia por el K del archivo si el ítem está en varios contratos
+    del maestro. Es la única función que decide el K; la usan preview y carga por igual.
+  - El preview ahora anota y muestra el contrato final resuelto (no el crudo del archivo)
+    y, si el maestro reasigna, el frontend muestra el aviso «archivo: K11 → K6».
+  - `confirmar` (`app/routers/certificaciones.py`) chequea permisos del jefe y loguea sobre
+    el K final, no sobre el del archivo.
+  - Frontend (`pages/upload.html`): eliminada `_resolverContratosDesdeDB` (la resolución de
+    contrato queda 100% en el backend); agregado el aviso de reasignación.
+- **Decisiones del usuario**: el maestro de ítems manda sobre el contrato del archivo,
+  incluso si difieren; una fila con cantidad 0 no se carga nunca; en el preview solo se ve
+  si trae total con plata (anomalía a corregir), el resto se oculta.
+- **Archivos tocados**:
+  - Backend: `app/services/validacion.py`, `app/services/carga.py`,
+    `app/routers/certificaciones.py`, `tests/test_validacion.py`,
+    `tests/test_resolver_contrato.py` (nuevo).
+  - Frontend: `pages/upload.html`.
+  - Ver también §5 (flujo de carga y resolución de contrato), actualizado para no dejar la
+    vieja prioridad de resolución de contrato contradiciendo esto (era la única sección que
+    describía la regla vieja; §13 no la mencionaba).
+- **Tests**: suite completa `python -m pytest -q` → 50 passed.
+- **Estado**: commiteado en ambos repos en la rama `fix/preview-cantidad-cero-contrato-maestro`
+  (no en `desarollo` ni `main`). Pendiente: prueba del usuario en local con datos reales →
+  PR → deploy (nada se deploya sin PR, regla del §16).

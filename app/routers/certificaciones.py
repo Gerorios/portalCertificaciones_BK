@@ -8,7 +8,7 @@ from app.database import get_db
 from app.models import Usuario, CargaLog
 from app.services.auth import get_current_user, check_contrato_access
 from app.services.parser import parsear_bytes
-from app.services.carga import cargar_certificaciones
+from app.services.carga import cargar_certificaciones, anotar_contrato_final
 from app.services.cache import guardar, recuperar, limpiar
 from app.services.parser_pdf import parsear_pdf_bytes
 from app.services.validacion import (
@@ -50,9 +50,10 @@ async def preview(
     if not resultado["filas"]:
         raise HTTPException(422, "No se encontraron filas válidas en el archivo")
 
-    # Se muestran todas las filas salvo las de plantilla (sin cantidad ni montos).
-    # Las incompletas (con plata pero sin cantidad/provincia) quedan visibles
-    # con error para que el usuario las corrija — nunca se ocultan.
+    # Se muestran todas las filas salvo las de plantilla (sin cantidad y sin
+    # total con plata — el catálogo con unitario y cantidad 0 se oculta).
+    # Las filas con total pero sin cantidad/provincia quedan visibles con
+    # error para que el usuario las corrija — nunca se ocultan.
     filas_visibles = filtrar_visibles_preview(resultado["filas"])
 
     provincias_validas = [
@@ -63,6 +64,8 @@ async def preview(
 
     items_existentes: dict[str, bool] = {}
     for fila in filas_visibles:
+        anotar_contrato_final(db, fila)
+
         codigo = (fila.get("item_codigo") or "").replace(".", ",")
         if codigo not in items_existentes:
             items_existentes[codigo] = db.execute(text("""
@@ -153,6 +156,7 @@ async def confirmar(
     filas_ok = filtrar_cargables(candidatas, provincias_validas=provincias_validas)
     for f in filas_ok:
         f["tiene_error"] = False
+        anotar_contrato_final(db, f)
     contratos_cargados = {f["contrato"] for f in filas_ok if f.get("contrato")}
 
     for k in contratos_cargados:

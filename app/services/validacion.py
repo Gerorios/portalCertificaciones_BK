@@ -4,6 +4,11 @@ Reglas de cargabilidad de filas de certificación (ver CONTEXT.md).
 La cargabilidad nunca es un veredicto congelado del parser: se recalcula
 acá cada vez que hace falta (preview, edición, confirmación), ignorando
 el flag `tiene_error` que traiga la fila.
+
+Una fila es "de plantilla" (ruido, se oculta del preview) cuando no tiene
+cantidad ni total con plata. El unitario solo no cuenta como contenido:
+los archivos de Naturgy traen el catálogo completo de ítems con precio
+unitario y cantidad 0, y eso no es nada certificado.
 """
 from typing import Optional
 
@@ -17,16 +22,15 @@ def _num(v) -> Optional[float]:
         return None
 
 
-def tiene_contenido_monetario(fila: dict) -> bool:
-    """Hay plata declarada: total o unitario presentes."""
-    return _num(fila.get("total_mes")) is not None or \
-           _num(fila.get("precio_unitario")) is not None
-
-
 def es_fila_plantilla(fila: dict) -> bool:
-    """Sin cantidad y sin ningún monto: ruido de plantilla, no se muestra."""
-    cant = _num(fila.get("cantidades"))
-    return (cant is None or cant == 0) and not tiene_contenido_monetario(fila)
+    """
+    Sin cantidad y sin total con plata: ruido de plantilla, no se muestra.
+    El unitario solo NO cuenta — los archivos de Naturgy traen el catálogo
+    completo con unitario y cantidad 0, y eso no es contenido certificado.
+    """
+    cant  = _num(fila.get("cantidades"))
+    total = _num(fila.get("total_mes"))
+    return (cant is None or cant == 0) and (total is None or total == 0)
 
 
 def revalidar_fila(
