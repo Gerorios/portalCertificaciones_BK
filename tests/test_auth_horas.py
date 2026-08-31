@@ -20,6 +20,7 @@ def test_token_horas_nivel_carga_mapea_a_jefe():
         jwt.decode(token_horas({"nivel": "carga", "ks": ["K6"], "inc": True}),
                    SECRET_HORAS, algorithms=["HS256"]))
     assert p.rol == "jefe" and p.contratos_list == ["K6"] and p.ver_incidencia is True
+    assert p.email == "jefe@serytec.com"
 
 def test_nivel_lectura_mapea_a_gerente_y_admin_a_admin():
     g = auth_mod.principal_desde_token_horas({"cuil": "1", "email": "g@s", "rol": "Admin",

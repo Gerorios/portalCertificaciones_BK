@@ -49,6 +49,7 @@ class PrincipalHoras:
     contratos_list: list = field(default_factory=list)
     ver_incidencia: bool = False
     id: int = 0                   # sin fila en la BD del portal
+    email: str = ""                # usado por /auth/me
 
 _NIVEL_A_ROL = {"admin": "admin", "lectura": "gerente", "carga": "jefe"}
 
@@ -62,6 +63,7 @@ def principal_desde_token_horas(payload: dict) -> PrincipalHoras:
         rol=_NIVEL_A_ROL[cert["nivel"]],
         contratos_list=[k.upper() for k in cert.get("ks", [])],
         ver_incidencia=bool(cert.get("inc")),
+        email=payload.get("email", ""),
     )
 
 def decode_any_token(token: str) -> dict:
