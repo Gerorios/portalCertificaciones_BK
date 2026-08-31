@@ -442,6 +442,7 @@ Plan: `docs/superpowers/plans/2026-08-31-preview-cantidad-cero-contrato-maestro.
     vieja prioridad de resolución de contrato contradiciendo esto (era la única sección que
     describía la regla vieja; §13 no la mencionaba).
 - **Tests**: suite completa `python -m pytest -q` → 50 passed.
-- **Estado**: commiteado en ambos repos en la rama `fix/preview-cantidad-cero-contrato-maestro`
-  (no en `desarollo` ni `main`). Pendiente: prueba del usuario en local con datos reales →
-  PR → deploy (nada se deploya sin PR, regla del §16).
+- **Estado**: CERRADO el mismo día. Probado por el usuario en local (backend :8000 +
+  frontend :5500), mergeado vía PRs [BK #48](https://github.com/Gerorios/portalCertificaciones_BK/pull/48)
+  y [FE #31](https://github.com/Gerorios/portalCertificaciones_FE/pull/31), deployado al VPS
+  (health y portal 200) y rama del fix eliminada en ambos repos.
