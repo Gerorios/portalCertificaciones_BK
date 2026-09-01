@@ -502,3 +502,33 @@ un módulo Certificaciones que consume este mismo backend FastAPI, sin duplicar 
   portal `python -m pytest -q` → 54 passed; Horas BE `npm test` → 297 passed (27 suites);
   Horas FE `npm test` (Vitest, corrida única) → 523 passed (74 archivos), sin flakes.
 - **Estado**: pendiente de prueba del usuario → PRs de los 3 repos → deploy. Nada deployado.
+
+- **Iteración post-mockup (2026-09-01)**: sobre la misma rama `feat/erp-certificaciones-etapa1`
+  de los 3 repos, ajuste de UI guiado por un mockup revisado con el usuario.
+  - **Qué cambió**:
+    - Página **Resumen** rediseñada según el mockup: KPIs de certificado / certificaron / faltan,
+      gráfico de evolución de incidencia de los últimos 12 meses (con cache de meses cerrados en
+      Horas Backend — solo el mes corriente se recalcula en cada request), y una tabla compacta
+      con semáforo; se elimina la tabla de detalle que tenía la primera versión.
+    - `estado-cargas` (avance de carga por K) abierto también a jefes (nivel `carga`), filtrado
+      a sus propios K — antes era solo para `admin`/`lectura`.
+    - Página **Analytics**: torta por provincia y listado de top items con formato más legible.
+  - **Decisiones**:
+    - Se mantiene una **estructura única de página por rol** (no una página distinta por rol);
+      una vista personalizada para el jefe (recorte propio de KPIs/serie) queda anotada como
+      **FUTURO**, no se construye en esta iteración.
+    - Top items **sin fila "Otros"**: el endpoint devuelve directamente el top N, no hay
+      agregado de "resto" a mostrar.
+  - El mockup de referencia vive en el artifact `47f9feac`
+    (`claude.ai/code/artifact/47f9feac-9cf0-4e8f-8f61-b1e7fb16433a`).
+  - **Suites al cierre de esta iteración** (corridas en local, nada deployado):
+    portal `python -m pytest -q` → 61 passed; Horas BE `npm test` → 302 passed (27 suites) —
+    de paso se corrigió un test de `incidencia.service.spec.ts` que dependía de la fecha real
+    del sistema (usaba el mes corriente sin fijarlo con fake timers, y quedó expuesto al cruzar
+    el calendario a septiembre: el cache de "mes cerrado" hacía que un test reutilizara el
+    resultado cacheado de otro); Horas FE `npm test` (Vitest, corrida única, ~538 tests) →
+    537 passed, 1 timeout intermitente en
+    `analytics-page.test.tsx` (torta por provincia) bajo la carga de la corrida completa —
+    verificado que ese mismo test pasa limpio en aislamiento (~7s de test, timeout de 5s), no
+    es un fallo lógico sino contención de recursos del entorno jsdom con las ~538 pruebas
+    corriendo en la misma tanda.
