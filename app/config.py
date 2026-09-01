@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 480
     allowed_origins: str = "http://localhost:5500"
+    # Secret HS256 del sistema de Horas (login unificado) — token con claims
+    # cuil/email/rol/cert. Vacío por defecto: sin valor, no se acepta ese token.
+    horas_jwt_secret: str = ""
 
     @property
     def database_url(self) -> str:

@@ -273,7 +273,9 @@ def detalle(
     current: Usuario = Depends(get_current_user),
     db: Session      = Depends(get_db),
 ):
-    check_contrato_access(current, contrato)
+    # gerente = lectura total (como resumen/historial); confirmar sigue estricto
+    if current.rol != "gerente":
+        check_contrato_access(current, contrato)
     rows = db.execute(text("""
         SELECT
             di.item_codigo, fc.tarea, fc.tipo, pv.provincia AS provincia,

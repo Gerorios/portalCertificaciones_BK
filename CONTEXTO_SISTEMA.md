@@ -35,6 +35,12 @@ Portal web interno para que **Serytec** cargue, valide y analice las certificaci
 **URL producción (VPS, principal):** `https://certificaciones.serytec.com.ar`
 (las URLs de Render/Netlify quedan como respaldo)
 
+**Frontend futuro (Unificación ERP, Etapa 1 — ver §16):** el módulo Certificaciones
+se está integrando dentro de la app de Horas (`https://misregistros.serytec.com.ar`),
+que consume este mismo backend FastAPI como API (`apiCert`, `NEXT_PUBLIC_CERT_API_URL`).
+Hasta que termine la migración, `certificaciones.serytec.com.ar` sigue sirviendo el
+frontend vanilla actual sin cambios — conviven las dos vías de acceso al mismo backend.
+
 ---
 
 ## 3. Base de datos
@@ -446,3 +452,91 @@ Plan: `docs/superpowers/plans/2026-08-31-preview-cantidad-cero-contrato-maestro.
   frontend :5500), mergeado vía PRs [BK #48](https://github.com/Gerorios/portalCertificaciones_BK/pull/48)
   y [FE #31](https://github.com/Gerorios/portalCertificaciones_FE/pull/31), deployado al VPS
   (health y portal 200) y rama del fix eliminada en ambos repos.
+
+### 2026-08-31 — Unificación ERP Etapa 1: módulo Certificaciones en la app de Horas (ramas feat/erp-certificaciones-etapa1)
+
+Trabajo en 3 repos en paralelo, cada uno en la rama `feat/erp-certificaciones-etapa1`. Objetivo:
+que la app de Horas (`misregistros.serytec.com.ar`, dueña de la identidad de usuarios) incorpore
+un módulo Certificaciones que consume este mismo backend FastAPI, sin duplicar login.
+
+- **Qué se construyó, por repo:**
+  - **Portal backend** (este repo): acepta también un JWT firmado por Horas
+    (`HORAS_JWT_SECRET`, mismo secret HS256 que `JWT_SECRET` en Horas), con claims
+    `cuil`/`email`/`rol`/`cert`; mapeo cert→rol interno del portal (`PrincipalHoras`,
+    solo lectura: `nombre`, `rol` ya mapeado, `contratos_list`, `ver_incidencia`, `id=0`).
+    CORS ampliado en `app/main.py` para aceptar el origen de esa app (Etapa 1: Task 8).
+  - **Horas Backend**: modelos y CRUD de accesos al módulo (nivel `admin`/`carga`/`lectura`
+    + lista de contratos K + flag `incidencia`); claim `cert` sumado al JWT y al endpoint de
+    perfil; endpoint nuevo `GET /certificaciones/incidencia-mo` (suma de ambas quincenas por
+    contrato, con el sub-total de horas/montos sin contrato asignable en un bucket aparte,
+    `contratoId: null, codigo: 'Sin contrato asignable'`, excluido del agregado por código y
+    devuelto separado como `sinAsignar`; solo visible a `admin`/`lectura` o con flag
+    `incidencia`). Migración Prisma (`20260831192740_certificaciones_accesos`) aplicada el
+    2026-08-31 con autorización del usuario (`prisma db execute` + `prisma migrate resolve
+    --applied`; fix de charset `utf8mb3` en `cuil` para compatibilidad de FK con
+    `sth_usuarios`, commiteado en `249b1d0`), documentado en `prisma/migrations/README.md`.
+  - **Horas Frontend**: sección Certificaciones dentro de la app (nav gateado por
+    `perfil.cert != null`), cliente HTTP `apiCert` (`NEXT_PUBLIC_CERT_API_URL`) apuntando al
+    portal backend, página Resumen (KPIs, tabla de incidencia con semáforo, card de
+    Presupuesto) y Analytics.
+- **Decisiones del usuario:**
+  - App única con **Horas como dueño de la identidad**: un solo login, el portal de
+    certificaciones no vuelve a emitir sesión propia para estos usuarios.
+  - **Accesos por concesión de admin**: nivel `admin`/`carga`/`lectura` + flag `incidencia`
+    independiente del nivel (alguien con `lectura` puede o no ver incidencia de MO).
+  - **Incidencia de mano de obra**: lo sin asignar a contrato va a un bucket aparte
+    (`sinAsignar`), nunca mezclado en el agregado por código de contrato — así no ensucia
+    el % de incidencia por contrato con horas que no se pudieron atribuir.
+  - **Umbral de alerta de incidencia = 30%**, hardcodeado en código del frontend
+    (`UMBRAL_INCIDENCIA_PCT` en `src/features/certificaciones/config.ts` de Horas FE) como
+    valor inicial acordado; UI de configuración por admin queda para una etapa posterior.
+- **Alta de acceso**: usuario `rcarrazana@serytec.com` dado de alta directo en la tabla de
+  accesos (nivel `admin` + flag `incidencia`) el 2026-08-31, para poder probar el módulo ya con
+  la migración aplicada.
+- **Verificado hoy**: la base de datos del portal y la de Horas son **la misma instancia
+  física** (`191.101.235.7`, esquema `testing`) — confirmado antes de decidir cómo compartir
+  identidad/accesos entre ambas apps.
+- **Checklist de deploy pendiente**:
+  - ✔ Migración Prisma de accesos aplicada en la BD compartida (ver arriba) — hecho.
+  - Setear `HORAS_JWT_SECRET` en el `.env` del portal (VPS) = mismo valor que `JWT_SECRET`
+    de Horas — a mano, nunca commiteado.
+  - Definir y configurar `NEXT_PUBLIC_CERT_API_URL` en Horas Frontend, o el proxy Nginx
+    same-origin alternativo (`location /certapi/` → `127.0.0.1:8000`) — decisión al deployar.
+  - Abrir y mergear los PRs de los 3 repos (portal, Horas Backend, Horas Frontend).
+- **Suites al cierre de la Etapa 1** (Task 8, corridas en local, código sin deployar):
+  portal `python -m pytest -q` → 54 passed; Horas BE `npm test` → 297 passed (27 suites);
+  Horas FE `npm test` (Vitest, corrida única) → 523 passed (74 archivos), sin flakes.
+- **Estado**: código sin deployar (el VPS sigue corriendo `main`, sin PRs de los 3 repos); la
+  migración de accesos y el alta del usuario admin ya están aplicadas en la BD compartida.
+
+- **Iteración post-mockup (2026-09-01)**: sobre la misma rama `feat/erp-certificaciones-etapa1`
+  de los 3 repos, ajuste de UI guiado por un mockup revisado con el usuario.
+  - **Qué cambió**:
+    - Página **Resumen** rediseñada según el mockup: KPIs de certificado / certificaron / faltan,
+      gráfico de evolución de incidencia de los últimos 12 meses (con cache de meses cerrados en
+      Horas Backend — solo el mes corriente se recalcula en cada request), y una tabla compacta
+      con semáforo; se elimina la tabla de detalle que tenía la primera versión.
+    - `estado-cargas` (avance de carga por K) abierto también a jefes (nivel `carga`), filtrado
+      a sus propios K — antes era solo para `admin`/`lectura`.
+    - Página **Analytics**: torta por provincia y listado de top items con formato más legible.
+  - **Decisiones**:
+    - Se mantiene una **estructura única de página por rol** (no una página distinta por rol);
+      una vista personalizada para el jefe (recorte propio de KPIs/serie) queda anotada como
+      **FUTURO**, no se construye en esta iteración.
+    - Top items **sin fila "Otros"**: el endpoint devuelve directamente el top N, no hay
+      agregado de "resto" a mostrar.
+  - El mockup de referencia vive en el artifact `47f9feac`
+    (`claude.ai/code/artifact/47f9feac-9cf0-4e8f-8f61-b1e7fb16433a`).
+  - **Suites al cierre de esta iteración** (corridas en local; código sin deployar — la
+    migración de accesos y el alta del usuario admin ya están aplicadas en la BD compartida,
+    ver arriba):
+    portal `python -m pytest -q` → 61 passed; Horas BE `npm test` → 302 passed (27 suites) —
+    de paso se corrigió un test de `incidencia.service.spec.ts` que dependía de la fecha real
+    del sistema (usaba el mes corriente sin fijarlo con fake timers, y quedó expuesto al cruzar
+    el calendario a septiembre: el cache de "mes cerrado" hacía que un test reutilizara el
+    resultado cacheado de otro); Horas FE `npm test` (Vitest, corrida única, ~538 tests) →
+    537 passed, 1 timeout intermitente en
+    `analytics-page.test.tsx` (torta por provincia) bajo la carga de la corrida completa —
+    verificado que ese mismo test pasa limpio en aislamiento (~7s de test, timeout de 5s), no
+    es un fallo lógico sino contención de recursos del entorno jsdom con las ~538 pruebas
+    corriendo en la misma tanda.
