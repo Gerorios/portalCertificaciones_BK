@@ -540,3 +540,31 @@ un módulo Certificaciones que consume este mismo backend FastAPI, sin duplicar 
     verificado que ese mismo test pasa limpio en aislamiento (~7s de test, timeout de 5s), no
     es un fallo lógico sino contención de recursos del entorno jsdom con las ~538 pruebas
     corriendo en la misma tanda.
+
+---
+
+## Sesión 2026-09-01 — Etapa 1 ERP EN PRODUCCIÓN (PR #49 mergeado y deployado)
+
+La app de Horas salió a producción con el módulo Certificaciones (back #52,
+front #58 de Horas) pero las pantallas daban 401 contra este backend: la rama
+`feat/erp-certificaciones-etapa1` de ESTE repo (aceptar JWT de Horas, CORS
+para misregistros, estado-cargas por K) estaba pusheada pero **sin mergear ni
+deployar** — quedó colgada al cerrar los otros dos repos.
+
+Resolución: pytest 61 OK → PR #49 → merge → en el VPS `git pull` + `docker
+compose up -d --build`. En el `.env` del VPS ya se habían configurado ese
+mismo día `HORAS_JWT_SECRET` (= JWT_SECRET de Horas, copiado dentro del VPS)
+y `ALLOWED_ORIGINS` + misregistros (backup `.env.bak-20260901`).
+
+⚠️ Trampa registrada: `docker compose restart` NO recarga el `.env` — para
+tomar env vars o código nuevo hace falta `up -d --force-recreate` (env) o
+`up -d --build` (código).
+
+Smoke: health 200, preflight CORS desde misregistros 200, y un JWT firmado
+con el secret de Horas (claims cuil/email/rol/cert) obtiene 200 en
+`/certificaciones/resumen`. Los 401 del incidente quedaron en los logs del
+contenedor como evidencia del antes.
+
+Siguiente (plan aprobado en la sesión de Horas): etapa 2 de la unificación —
+dashboard/analytics/historial servidos por NestJS, este backend deja de
+recibir tráfico del frontend de Horas y empieza el camino al apagado.
