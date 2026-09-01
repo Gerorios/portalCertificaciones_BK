@@ -471,8 +471,10 @@ un módulo Certificaciones que consume este mismo backend FastAPI, sin duplicar 
     contrato, con el sub-total de horas/montos sin contrato asignable en un bucket aparte,
     `contratoId: null, codigo: 'Sin contrato asignable'`, excluido del agregado por código y
     devuelto separado como `sinAsignar`; solo visible a `admin`/`lectura` o con flag
-    `incidencia`). Migración Prisma generada pero NO aplicada (se aplica en el deploy con
-    `migrate deploy`, documentado en `prisma/migrations/README.md`).
+    `incidencia`). Migración Prisma (`20260831192740_certificaciones_accesos`) aplicada el
+    2026-08-31 con autorización del usuario (`prisma db execute` + `prisma migrate resolve
+    --applied`; fix de charset `utf8mb3` en `cuil` para compatibilidad de FK con
+    `sth_usuarios`, commiteado en `249b1d0`), documentado en `prisma/migrations/README.md`.
   - **Horas Frontend**: sección Certificaciones dentro de la app (nav gateado por
     `perfil.cert != null`), cliente HTTP `apiCert` (`NEXT_PUBLIC_CERT_API_URL`) apuntando al
     portal backend, página Resumen (KPIs, tabla de incidencia con semáforo, card de
@@ -488,20 +490,24 @@ un módulo Certificaciones que consume este mismo backend FastAPI, sin duplicar 
   - **Umbral de alerta de incidencia = 30%**, hardcodeado en código del frontend
     (`UMBRAL_INCIDENCIA_PCT` en `src/features/certificaciones/config.ts` de Horas FE) como
     valor inicial acordado; UI de configuración por admin queda para una etapa posterior.
+- **Alta de acceso**: usuario `rcarrazana@serytec.com` dado de alta directo en la tabla de
+  accesos (nivel `admin` + flag `incidencia`) el 2026-08-31, para poder probar el módulo ya con
+  la migración aplicada.
 - **Verificado hoy**: la base de datos del portal y la de Horas son **la misma instancia
   física** (`191.101.235.7`, esquema `testing`) — confirmado antes de decidir cómo compartir
   identidad/accesos entre ambas apps.
-- **Checklist de deploy pendiente** (nada de esto se ejecutó — queda para el usuario):
-  - Aplicar la migración Prisma pendiente en Horas Backend con `migrate deploy`.
+- **Checklist de deploy pendiente**:
+  - ✔ Migración Prisma de accesos aplicada en la BD compartida (ver arriba) — hecho.
   - Setear `HORAS_JWT_SECRET` en el `.env` del portal (VPS) = mismo valor que `JWT_SECRET`
     de Horas — a mano, nunca commiteado.
   - Definir y configurar `NEXT_PUBLIC_CERT_API_URL` en Horas Frontend, o el proxy Nginx
     same-origin alternativo (`location /certapi/` → `127.0.0.1:8000`) — decisión al deployar.
   - Abrir y mergear los PRs de los 3 repos (portal, Horas Backend, Horas Frontend).
-- **Suites al cierre de la Etapa 1** (Task 8, corridas en local, nada deployado):
+- **Suites al cierre de la Etapa 1** (Task 8, corridas en local, código sin deployar):
   portal `python -m pytest -q` → 54 passed; Horas BE `npm test` → 297 passed (27 suites);
   Horas FE `npm test` (Vitest, corrida única) → 523 passed (74 archivos), sin flakes.
-- **Estado**: pendiente de prueba del usuario → PRs de los 3 repos → deploy. Nada deployado.
+- **Estado**: código sin deployar (el VPS sigue corriendo `main`, sin PRs de los 3 repos); la
+  migración de accesos y el alta del usuario admin ya están aplicadas en la BD compartida.
 
 - **Iteración post-mockup (2026-09-01)**: sobre la misma rama `feat/erp-certificaciones-etapa1`
   de los 3 repos, ajuste de UI guiado por un mockup revisado con el usuario.
@@ -521,7 +527,9 @@ un módulo Certificaciones que consume este mismo backend FastAPI, sin duplicar 
       agregado de "resto" a mostrar.
   - El mockup de referencia vive en el artifact `47f9feac`
     (`claude.ai/code/artifact/47f9feac-9cf0-4e8f-8f61-b1e7fb16433a`).
-  - **Suites al cierre de esta iteración** (corridas en local, nada deployado):
+  - **Suites al cierre de esta iteración** (corridas en local; código sin deployar — la
+    migración de accesos y el alta del usuario admin ya están aplicadas en la BD compartida,
+    ver arriba):
     portal `python -m pytest -q` → 61 passed; Horas BE `npm test` → 302 passed (27 suites) —
     de paso se corrigió un test de `incidencia.service.spec.ts` que dependía de la fecha real
     del sistema (usaba el mes corriente sin fijarlo con fake timers, y quedó expuesto al cruzar
