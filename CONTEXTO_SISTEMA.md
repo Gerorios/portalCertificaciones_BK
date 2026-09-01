@@ -568,3 +568,26 @@ contenedor como evidencia del antes.
 Siguiente (plan aprobado en la sesión de Horas): etapa 2 de la unificación —
 dashboard/analytics/historial servidos por NestJS, este backend deja de
 recibir tráfico del frontend de Horas y empieza el camino al apagado.
+
+---
+
+## Sesión 2026-09-01 (2) — ERP etapa 2: el portal ahora corre sobre Horas_Sertec
+
+La app de Horas sirve certificaciones desde su propio NestJS (Horas back #53,
+front #59, deployados). Este backend YA NO recibe tráfico de misregistros:
+se retiraron su CORS y el HORAS_JWT_SECRET (vaciado en el .env del VPS).
+
+**Cambio de infraestructura**: las tablas se mudaron de `testing` a
+`Horas_Sertec` con renombre (`sth_cert_*`) y este backend quedó apuntado a
+`Horas_Sertec` (DB_NAME + credenciales nuevas en el .env del VPS, backup
+`.env.bak-20260901-etapa2`), leyendo/escribiendo a través de VISTAS de
+compatibilidad con los nombres viejos (fact_certificaciones, dim_item,
+dim_contrato, ma_provincias, carga_log, dim_presupuesto_contrato). El código
+Python NO cambió. Paridad verificada byte a byte contra el NestJS.
+
+⚠️ Las tablas viejas de `testing` quedaron CONGELADAS (solo rollback:
+restaurar el .env desde el backup). NO cargar certificaciones apuntando a
+`testing`.
+
+Siguiente etapa de la unificación: maestro de ítems en Horas (etapa 3);
+este portal se apaga en la etapa 5.
