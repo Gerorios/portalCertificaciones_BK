@@ -591,3 +591,23 @@ restaurar el .env desde el backup). NO cargar certificaciones apuntando a
 
 Siguiente etapa de la unificación: maestro de ítems en Horas (etapa 3);
 este portal se apaga en la etapa 5.
+
+---
+
+## Sesión 2026-09-02 — ERP etapa 3: el maestro de ítems se administra en Horas
+
+La app de Horas tiene ahora el ABM del maestro (pantalla Certificaciones →
+Ítems, solo nivel admin; Horas back #54 y front #60, deployados). Este
+backend NO cambió.
+
+⚠️ Operativo: `items.html` de este portal queda REDUNDANTE — ambos ABM
+escriben la misma tabla física (`sth_cert_items` vía la vista `dim_item`).
+La fuente de verdad administrativa pasa a misregistros; evitar ediciones
+simultáneas desde los dos lados. Se apaga con el portal en la etapa 5.
+
+Limpieza de datos hecha en el deploy: 648 filas con `tipo` fuera de
+OPEX-CAPEX (valores vacíos y "m") normalizadas a NULL en Horas_Sertec (y en
+el snapshot de testing). Analytics ya las ignoraba; sin impacto.
+
+Siguiente etapa: la carga de certificaciones (upload, parser, validación)
+migra a Horas (etapa 4) y después el apagado (etapa 5).
